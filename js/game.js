@@ -680,11 +680,12 @@ class Monster {
         this.radius = 14;
         
         this.level = level;
-        this.maxHp = 30 + level * 10;
+        const monsterScale = 1 + (level - 1) * 0.25;
+        this.maxHp = Math.floor((30 + level * 10) * monsterScale);
         this.hp = this.maxHp;
-        this.atk = 5 + level * 2;
+        this.atk = Math.floor((5 + level * 2) * monsterScale);
         this.speed = 1.2 + Math.random() * 0.4;
-        this.expValue = 20 + level * 5;
+        this.expValue = Math.floor((20 + level * 5) * monsterScale);
 
         this.state = 'walk'; 
         this.deathTimer = 40; 
@@ -999,15 +1000,15 @@ class FloaterManager {
 const SPAWN_INTERVAL = 180;
 const MAX_MONSTERS = 10;
 const ITEM_POOL = [
-    { name: '철제 검', type: 'weapon', slot: 'weapon', stat: '+5 공격력', value: 5, rarity: 'normal', color: '#b0a89f' },
-    { name: '룬 단검', type: 'weapon', slot: 'weapon', stat: '+12 공격력', value: 12, rarity: 'normal', color: '#b0a89f' },
-    { name: '디아블로의 낫', type: 'weapon', slot: 'weapon', stat: '+30 공격력', value: 30, rarity: 'unique', color: '#ff5500' },
-    { name: '가죽 방패', type: 'armor', slot: 'shield', stat: '+10 최대 HP', value: 10, rarity: 'normal', color: '#b0a89f' },
-    { name: '성기사의 방패', type: 'armor', slot: 'shield', stat: '+40 최대 HP', value: 40, rarity: 'unique', color: '#ff5500' },
-    { name: '강철 투구', type: 'armor', slot: 'helmet', stat: '+25 최대 HP', value: 25, rarity: 'normal', color: '#b0a89f' },
-    { name: '가죽 갑옷', type: 'armor', slot: 'chest', stat: '+15 최대 HP', value: 15, rarity: 'normal', color: '#b0a89f' },
-    { name: '대천사의 로브', type: 'armor', slot: 'chest', stat: '+50 최대 MP', value: 50, rarity: 'unique', color: '#ff5500' },
-    { name: '체력 물약', type: 'potion', slot: 'potion', stat: '클릭하여 물약 개수 +1', value: 1, rarity: 'normal', color: '#00ff00' }
+    { name: '철제 검', type: 'weapon', slot: 'weapon', stat: '+5 공격력', value: 5, rarity: 'normal', color: '#b0a89f', reqLevel: 1 },
+    { name: '룬 단검', type: 'weapon', slot: 'weapon', stat: '+12 공격력', value: 12, rarity: 'normal', color: '#b0a89f', reqLevel: 1 },
+    { name: '디아블로의 낫', type: 'weapon', slot: 'weapon', stat: '+30 공격력', value: 30, rarity: 'unique', color: '#ff5500', reqLevel: 15 },
+    { name: '가죽 방패', type: 'armor', slot: 'shield', stat: '+10 최대 HP', value: 10, rarity: 'normal', color: '#b0a89f', reqLevel: 1 },
+    { name: '성기사의 방패', type: 'armor', slot: 'shield', stat: '+40 최대 HP', value: 40, rarity: 'unique', color: '#ff5500', reqLevel: 12 },
+    { name: '강철 투구', type: 'armor', slot: 'helmet', stat: '+25 최대 HP', value: 25, rarity: 'normal', color: '#b0a89f', reqLevel: 1 },
+    { name: '가죽 갑옷', type: 'armor', slot: 'chest', stat: '+15 최대 HP', value: 15, rarity: 'normal', color: '#b0a89f', reqLevel: 1 },
+    { name: '대천사의 로브', type: 'armor', slot: 'chest', stat: '+50 최대 MP', value: 50, rarity: 'unique', color: '#ff5500', reqLevel: 18 },
+    { name: '체력 물약', type: 'potion', slot: 'potion', stat: '클릭하여 물약 개수 +1', value: 1, rarity: 'normal', color: '#00ff00', reqLevel: 1 }
 ];
 
 const PREFIXES = [
@@ -1159,6 +1160,20 @@ class Game {
                     descArea.appendChild(document.createTextNode(item.stat));
                     descArea.appendChild(document.createElement('br'));
 
+                    if (item.slot !== 'potion') {
+                        const reqLvl = item.reqLevel || 1;
+                        const reqSpan = document.createElement('span');
+                        reqSpan.textContent = `요구 레벨: ${reqLvl}`;
+                        if (this.player.level < reqLvl) {
+                            reqSpan.style.color = '#ff3333';
+                            reqSpan.style.fontWeight = 'bold';
+                        } else {
+                            reqSpan.style.color = '#e0d8cf';
+                        }
+                        descArea.appendChild(reqSpan);
+                        descArea.appendChild(document.createElement('br'));
+                    }
+
                     const span = document.createElement('span');
                     span.style.color = '#888';
                     span.style.fontSize = '10px';
@@ -1205,6 +1220,11 @@ class Game {
                             sfx.playMonsterDeath(); 
                             this.floaters.add(this.player.x, this.player.y - 15, "장착 해제", "#aaaaaa");
                         } else {
+                            if (this.player.level < (item.reqLevel || 1)) {
+                                sfx.playHit();
+                                this.floaters.add(this.player.x, this.player.y - 15, "레벨 부족!", "#ff3333");
+                                return;
+                            }
                             // Unequip any other item of the same slot first
                             this.inventory.forEach(otherItem => {
                                 if (otherItem && otherItem.slot === item.slot) {
@@ -1316,7 +1336,7 @@ class Game {
                     sfx.playSlash();
                     const expGained = clickedMonster.takeDamage(this.player.atk, this.floaters);
                     if (expGained > 0) {
-                        this.handleMonsterKill(expGained);
+                        this.handleMonsterKill(clickedMonster);
                     }
                     this.updateUI();
                 }
@@ -1397,11 +1417,11 @@ class Game {
         this.monsters.push(new Monster(rx, ry, mLvl));
     }
 
-    handleMonsterKill(exp) {
+    handleMonsterKill(monster) {
         sfx.playMonsterDeath();
         this.player.kills++;
         
-        const isLeveledUp = this.player.gainExp(exp);
+        const isLeveledUp = this.player.gainExp(monster.expValue);
         if (isLeveledUp) {
             sfx.playLevelUp();
             this.triggerLevelUpBanner();
@@ -1411,7 +1431,7 @@ class Game {
         this.updateUI();
 
         if (Math.random() < 0.35) {
-            this.lootItem();
+            this.lootItem(monster.level);
         }
     }
 
@@ -1446,6 +1466,9 @@ class Game {
                     badge.style.textShadow = '1px 1px 2px #000';
                     badge.textContent = 'E';
                     slot.appendChild(badge);
+                } else if (this.player.level < (item.reqLevel || 1)) {
+                    slot.style.borderColor = '#ff3333';
+                    slot.style.boxShadow = 'inset 0 0 10px rgba(255, 0, 0, 0.4)';
                 } else {
                     slot.style.borderColor = item.color;
                     slot.style.boxShadow = '';
@@ -1459,7 +1482,7 @@ class Game {
         });
     }
 
-    lootItem() {
+    lootItem(mLvl = 1) {
         // 1. Roll rarity
         const roll = Math.random();
         let rarity = 'normal';
@@ -1501,6 +1524,16 @@ class Game {
         // Clone item template
         let item = { ...itemTemplate, rarity, color, equipped: false };
 
+        // Determine required level
+        let reqLevel = 1;
+        if (item.slot !== 'potion') {
+            const baseReq = itemTemplate.reqLevel || 1;
+            reqLevel = Math.max(baseReq, mLvl + Math.floor(Math.random() * 3) - 1);
+        }
+        item.reqLevel = reqLevel;
+
+        const scaleMultiplier = 1 + (reqLevel - 1) * 0.15;
+
         // 3. Apply affixes if magic or rare and not a potion
         if ((rarity === 'magic' || rarity === 'rare') && item.slot !== 'potion') {
             const applicablePrefixes = PREFIXES.filter(p => p.slot.includes(item.slot));
@@ -1541,16 +1574,19 @@ class Game {
 
             item.name = nameParts.join(' ');
             item.value += bonusVal;
+        }
 
+        // Scale values for weapons/armors
+        if (item.slot !== 'potion') {
+            item.value = Math.floor(item.value * scaleMultiplier);
+            
             // Rebuild stat string
-            if (item.slot === 'weapon') {
+            if (itemTemplate.stat.includes('공격력')) {
                 item.stat = `+${item.value} 공격력`;
+            } else if (itemTemplate.stat.includes('MP')) {
+                item.stat = `+${item.value} 최대 MP`;
             } else {
-                if (chosenSuffix && chosenSuffix.statType === 'MP') {
-                    item.stat = `+${item.value} 최대 MP`;
-                } else {
-                    item.stat = `+${item.value} 최대 HP`;
-                }
+                item.stat = `+${item.value} 최대 HP`;
             }
         }
 
@@ -1611,6 +1647,8 @@ class Game {
         document.getElementById('up-atk').disabled = !hasPoints;
         document.getElementById('up-maxhp').disabled = !hasPoints;
         document.getElementById('up-maxmp').disabled = !hasPoints;
+
+        this.syncInventoryUI();
     }
 
     resize() {
@@ -1649,7 +1687,7 @@ class Game {
                 if (Math.hypot(p.x - m.x, p.y - m.y) < p.radius + m.radius) {
                     const expGained = m.takeDamage(p.damage, this.floaters);
                     if (expGained > 0) {
-                        this.handleMonsterKill(expGained);
+                        this.handleMonsterKill(m);
                     }
                     hit = true;
                     this.updateUI();
