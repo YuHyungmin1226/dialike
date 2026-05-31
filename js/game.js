@@ -999,14 +999,14 @@ class FloaterManager {
 const SPAWN_INTERVAL = 180;
 const MAX_MONSTERS = 10;
 const ITEM_POOL = [
-    { name: '철제 검', type: 'weapon', stat: '+5 공격력', value: 5, rarity: 'normal', color: '#b0a89f' },
-    { name: '룬 단검', type: 'weapon', stat: '+12 공격력', value: 12, rarity: 'rare', color: '#00ffcc' },
-    { name: '디아블로의 낫', type: 'weapon', stat: '+30 공격력', value: 30, rarity: 'unique', color: '#ff5500' },
-    { name: '가죽 방패', type: 'armor', stat: '+10 최대 HP', value: 10, rarity: 'normal', color: '#b0a89f' },
-    { name: '성기사의 방패', type: 'armor', stat: '+40 최대 HP', value: 40, rarity: 'rare', color: '#00ffcc' },
-    { name: '강철 투구', type: 'armor', stat: '+25 최대 HP', value: 25, rarity: 'normal', color: '#b0a89f' },
-    { name: '대천사의 로브', type: 'armor', stat: '+50 최대 MP', value: 50, rarity: 'unique', color: '#ff5500' },
-    { name: '체력 물약', type: 'potion', stat: '클릭하여 물약 개수 +1', value: 1, rarity: 'normal', color: '#00ff00' }
+    { name: '철제 검', type: 'weapon', slot: 'weapon', stat: '+5 공격력', value: 5, rarity: 'normal', color: '#b0a89f' },
+    { name: '룬 단검', type: 'weapon', slot: 'weapon', stat: '+12 공격력', value: 12, rarity: 'rare', color: '#00ffcc' },
+    { name: '디아블로의 낫', type: 'weapon', slot: 'weapon', stat: '+30 공격력', value: 30, rarity: 'unique', color: '#ff5500' },
+    { name: '가죽 방패', type: 'armor', slot: 'shield', stat: '+10 최대 HP', value: 10, rarity: 'normal', color: '#b0a89f' },
+    { name: '성기사의 방패', type: 'armor', slot: 'shield', stat: '+40 최대 HP', value: 40, rarity: 'rare', color: '#00ffcc' },
+    { name: '강철 투구', type: 'armor', slot: 'helmet', stat: '+25 최대 HP', value: 25, rarity: 'normal', color: '#b0a89f' },
+    { name: '대천사의 로브', type: 'armor', slot: 'chest', stat: '+50 최대 MP', value: 50, rarity: 'unique', color: '#ff5500' },
+    { name: '체력 물약', type: 'potion', slot: 'potion', stat: '클릭하여 물약 개수 +1', value: 1, rarity: 'normal', color: '#00ff00' }
 ];
 
 class Game {
@@ -1125,7 +1125,7 @@ class Game {
                         eqSpan.style.fontSize = '10px';
                         eqSpan.textContent = '[장착 중]';
                         headerGroup.appendChild(eqSpan);
-                    } else if (item.type !== 'potion') {
+                    } else if (item.slot !== 'potion') {
                         const eqSpan = document.createElement('span');
                         eqSpan.style.color = '#888';
                         eqSpan.style.fontSize = '10px';
@@ -1142,7 +1142,7 @@ class Game {
                     const span = document.createElement('span');
                     span.style.color = '#888';
                     span.style.fontSize = '10px';
-                    if (item.type === 'potion') {
+                    if (item.slot === 'potion') {
                         span.textContent = '(클릭: 벨트에 등록 | Shift+클릭: 파괴)';
                     } else {
                         span.textContent = item.equipped ? '(클릭: 장착 해제 | Shift+클릭: 파괴)' : '(클릭: 아이템 장착 | Shift+클릭: 파괴)';
@@ -1173,7 +1173,7 @@ class Game {
                     }
                 } else {
                     // Regular Click
-                    if (item.type === 'potion') {
+                    if (item.slot === 'potion') {
                         this.player.potions++;
                         Reflect.set(this.inventory, idx, null);
                         sfx.playPotion();
@@ -1185,9 +1185,9 @@ class Game {
                             sfx.playMonsterDeath(); 
                             this.floaters.add(this.player.x, this.player.y - 15, "장착 해제", "#aaaaaa");
                         } else {
-                            // Unequip any other item of the same type first
+                            // Unequip any other item of the same slot first
                             this.inventory.forEach(otherItem => {
-                                if (otherItem && otherItem.type === item.type) {
+                                if (otherItem && otherItem.slot === item.slot) {
                                     otherItem.equipped = false;
                                 }
                             });
@@ -1401,11 +1401,15 @@ class Game {
             const item = this.inventory.at(i);
             if (item) {
                 slot.classList.add('occupied');
-                if (item.type === 'weapon') {
+                if (item.slot === 'weapon') {
                     slot.innerHTML = `<div style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 24px; transform: rotate(45deg);">🗡️</div>`;
-                } else if (item.type === 'armor') {
+                } else if (item.slot === 'shield') {
                     slot.innerHTML = `<div style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 24px;">🛡️</div>`;
-                } else if (item.type === 'potion') {
+                } else if (item.slot === 'helmet') {
+                    slot.innerHTML = `<div style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 24px;">🪖</div>`;
+                } else if (item.slot === 'chest') {
+                    slot.innerHTML = `<div style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 24px;">🧥</div>`;
+                } else if (item.slot === 'potion') {
                     slot.innerHTML = `<div style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 24px;">🧪</div>`;
                 }
 
