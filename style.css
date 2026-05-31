@@ -699,3 +699,62 @@ canvas {
     line-height: 1.3;
     flex: 1;
 }
+
+/* Shop Panel Position */
+#shop-panel {
+    top: 60px;
+    right: 320px;
+    width: 290px;
+}
+
+/* Shop Item Styling */
+.shop-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 12px;
+    margin-bottom: 8px;
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid var(--border-bronze);
+    border-radius: 4px;
+    transition: border-color 0.2s, background-color 0.2s;
+}
+
+.shop-item:hover {
+    border-color: var(--border-gold);
+    background: rgba(40, 20, 20, 0.3);
+}
+
+.shop-item-info {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.shop-item-name {
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.shop-item-stat {
+    font-size: 11px;
+    color: #00ff00;
+}
+
+.buy-btn {
+    padding: 6px 10px;
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.buy-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    background: #2e241c;
+    border-color: #555;
+    color: #777;
+}
+
+.text-gold {
+    color: var(--gothic-gold) !important;
+}

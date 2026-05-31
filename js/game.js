@@ -371,7 +371,8 @@ class Player {
         this.skillPoints = 0;
         this.skills = { fireball: 1 };
         this.fireballBonus = 0;
-        this.potions = 5;
+        this.potions = [60, 60, 60, 60, 60];
+        this.gold = 100;
         this.kills = 0;
 
         this.state = 'idle';
@@ -414,12 +415,12 @@ class Player {
     }
 
     usePotion() {
-        if (this.potions > 0 && this.hp < this.maxHp) {
-            this.potions--;
-            this.hp = Math.min(this.maxHp, this.hp + 50);
-            return true;
+        if (this.potions.length > 0 && this.hp < this.maxHp) {
+            const healVal = this.potions.pop();
+            this.hp = Math.min(this.maxHp, this.hp + healVal);
+            return healVal;
         }
-        return false;
+        return 0;
     }
 
     addStat(statType) {
@@ -1019,6 +1020,101 @@ class Portal {
 }
 
 // ==========================================
+// 6.6. MERCHANT NPC
+// ==========================================
+class Npc {
+    constructor(x, y, name) {
+        this.x = x;
+        this.y = y;
+        this.name = name;
+        this.radius = 16;
+        this.animTimer = 0;
+    }
+
+    update() {
+        this.animTimer += 0.03;
+    }
+
+    render(ctx, camera, viewWidth, viewHeight) {
+        const isoCam = camera.getIsoOffset();
+        const halfWidth = viewWidth / 2;
+        const halfHeight = viewHeight / 2;
+
+        const screenX = (this.x - this.y) - isoCam.x + halfWidth;
+        const screenY = (this.x + this.y) * 0.5 - isoCam.y + halfHeight;
+
+        ctx.save();
+        
+        // Ellipse shadow under feet
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+        ctx.beginPath();
+        ctx.ellipse(screenX, screenY + 4, 12, 6, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Idle floating bounce animation
+        const bounce = Math.sin(this.animTimer) * 2;
+
+        // Staff (Behind/Side)
+        ctx.strokeStyle = '#3e2723';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(screenX - 8, screenY + 6 + bounce);
+        ctx.lineTo(screenX - 8, screenY - 24 + bounce);
+        ctx.stroke();
+
+        // Golden gem on top of the staff
+        ctx.fillStyle = '#ffd700';
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = '#ffd700';
+        ctx.beginPath();
+        ctx.arc(screenX - 8, screenY - 26 + bounce, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+
+        // Cloak/Body (Gothic Purple)
+        ctx.fillStyle = '#4a148c';
+        ctx.beginPath();
+        ctx.moveTo(screenX - 10, screenY + 4 + bounce);
+        ctx.lineTo(screenX + 10, screenY + 4 + bounce);
+        ctx.lineTo(screenX + 6, screenY - 14 + bounce);
+        ctx.lineTo(screenX - 6, screenY - 14 + bounce);
+        ctx.closePath();
+        ctx.fill();
+
+        // Hood/Head
+        ctx.fillStyle = '#311b92';
+        ctx.beginPath();
+        ctx.arc(screenX, screenY - 16 + bounce, 6, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Shadow inside hood (Face area)
+        ctx.fillStyle = '#110022';
+        ctx.beginPath();
+        ctx.arc(screenX, screenY - 15 + bounce, 3, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Golden Trim/Accents on Cloak
+        ctx.strokeStyle = '#d4af37';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(screenX - 6, screenY - 14 + bounce);
+        ctx.lineTo(screenX, screenY + 4 + bounce);
+        ctx.lineTo(screenX + 6, screenY - 14 + bounce);
+        ctx.stroke();
+
+        // NPC Name floating above
+        ctx.fillStyle = '#d4af37';
+        ctx.font = 'bold 11px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.shadowBlur = 4;
+        ctx.shadowColor = '#000000';
+        ctx.fillText(this.name, screenX, screenY - 32 + bounce);
+
+        ctx.restore();
+    }
+}
+
+// ==========================================
 // 7. FLOATING TEXT EFFECTS ENGINE
 // ==========================================
 class FloaterManager {
@@ -1088,7 +1184,7 @@ const ITEM_POOL = [
     { name: '강철 투구', type: 'armor', slot: 'helmet', stat: '+25 최대 HP', value: 25, rarity: 'normal', color: '#b0a89f', reqLevel: 1 },
     { name: '가죽 갑옷', type: 'armor', slot: 'chest', stat: '+15 최대 HP', value: 15, rarity: 'normal', color: '#b0a89f', reqLevel: 1 },
     { name: '대천사의 로브', type: 'armor', slot: 'chest', stat: '+50 최대 MP', value: 50, rarity: 'unique', color: '#ff5500', reqLevel: 18 },
-    { name: '체력 물약', type: 'potion', slot: 'potion', stat: '클릭하여 물약 개수 +1', value: 1, rarity: 'normal', color: '#00ff00', reqLevel: 1 }
+    { name: '체력 물약', type: 'potion', slot: 'potion', stat: '사용 시 체력 +60 회복', value: 60, rarity: 'normal', color: '#00ff00', reqLevel: 1 }
 ];
 
 const PREFIXES = [
@@ -1134,6 +1230,10 @@ class Game {
         this.townPortal = null;
         this.floaters = new FloaterManager();
         this.spawnTimer = 0;
+
+        const townCenterCartX = 8 * this.townMap.tileSize + this.townMap.tileSize / 2;
+        const townCenterCartY = 8 * this.townMap.tileSize + this.townMap.tileSize / 2;
+        this.npc = new Npc(townCenterCartX, townCenterCartY, "아카라");
 
         this.inventory = new Array(16).fill(null);
         this.mouse = { x: 0, y: 0, isDown: false, button: -1 };
@@ -1181,6 +1281,68 @@ class Game {
         };
         toggleSkillsBtn.addEventListener('click', toggleSkills);
         closeSkillsBtn.addEventListener('click', () => skillsPanel.classList.add('hidden'));
+
+        // Shop UI Bindings
+        const shopPanel = document.getElementById('shop-panel');
+        const closeShopBtn = document.getElementById('close-shop-btn');
+        closeShopBtn.addEventListener('click', () => shopPanel.classList.add('hidden'));
+
+        const shopItemsConfig = [
+            { name: '소형 체력 물약', value: 30, price: 15 },
+            { name: '하급 체력 물약', value: 60, price: 30 },
+            { name: '일반 체력 물약', value: 120, price: 60 },
+            { name: '대형 체력 물약', value: 250, price: 125 }
+        ];
+
+        document.querySelectorAll('.buy-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                sfx.init();
+                const idx = parseInt(btn.dataset.index);
+                const itemConfig = shopItemsConfig[idx];
+                if (!itemConfig) return;
+
+                if (this.player.gold < itemConfig.price) {
+                    this.floaters.add(this.player.x, this.player.y - 15, "골드가 부족합니다!", "#ff3333");
+                    sfx.playHit();
+                    return;
+                }
+
+                // Find empty slot in inventory
+                let emptySlotIdx = -1;
+                for (let i = 0; i < this.inventory.length; i++) {
+                    if (this.inventory.at(i) === null) {
+                        emptySlotIdx = i;
+                        break;
+                    }
+                }
+
+                if (emptySlotIdx === -1) {
+                    this.floaters.add(this.player.x, this.player.y - 15, "소지품 창이 가득 찼습니다!", "#ff3333");
+                    sfx.playHit();
+                    return;
+                }
+
+                // Deduct gold and add potion item
+                this.player.gold -= itemConfig.price;
+                const potionItem = {
+                    name: itemConfig.name,
+                    type: 'potion',
+                    slot: 'potion',
+                    stat: `사용 시 체력 +${itemConfig.value} 회복`,
+                    value: itemConfig.value,
+                    rarity: 'normal',
+                    color: '#00ff00',
+                    reqLevel: 1
+                };
+
+                Reflect.set(this.inventory, emptySlotIdx, potionItem);
+                sfx.playPotion();
+                this.floaters.add(this.player.x, this.player.y - 15, `물약 구매! (-${itemConfig.price} G)`, "#ffd700");
+
+                this.syncInventoryUI();
+                this.updateUI();
+            });
+        });
 
         document.getElementById('up-fireball').addEventListener('click', () => {
             if (this.player.addSkillPoint('fireball')) {
@@ -1316,10 +1478,10 @@ class Game {
                 } else {
                     // Regular Click
                     if (item.slot === 'potion') {
-                        this.player.potions++;
+                        this.player.potions.push(item.value);
                         Reflect.set(this.inventory, idx, null);
                         sfx.playPotion();
-                        this.floaters.add(this.player.x, this.player.y - 15, "물약 +1", "#00ff00");
+                        this.floaters.add(this.player.x, this.player.y - 15, `${item.name} 등록`, "#00ff00");
                     } else {
                         // Weapon/Armor Equip Toggle
                         if (item.equipped) {
@@ -1409,14 +1571,40 @@ class Game {
     }
 
     triggerPotion() {
-        if (this.player.usePotion()) {
+        const healed = this.player.usePotion();
+        if (healed > 0) {
             sfx.playPotion();
-            this.floaters.add(this.player.x, this.player.y - 15, "+50 HP", "#00ff00");
+            this.floaters.add(this.player.x, this.player.y - 15, `+${healed} HP`, "#00ff00");
             this.updateUI();
         }
     }
 
     handleLeftClick(sx, sy) {
+        if (this.currentMap === 'town') {
+            const isoCam = this.camera.getIsoOffset();
+            const npcIso = this.map.worldToIso(this.npc.x, this.npc.y);
+            const npx = npcIso.x - isoCam.x + this.canvas.width / 2;
+            const npy = npcIso.y - isoCam.y + this.canvas.height / 2;
+
+            if (Math.hypot(sx - npx, sy - npy) < 32) {
+                const dx = this.npc.x - this.player.x;
+                const dy = this.npc.y - this.player.y;
+                const dist = Math.hypot(dx, dy);
+
+                if (dist <= 64) {
+                    const shopPanel = document.getElementById('shop-panel');
+                    if (shopPanel) {
+                        shopPanel.classList.toggle('hidden');
+                        sfx.playPotion();
+                    }
+                } else {
+                    this.player.moveTo(this.npc.x, this.npc.y);
+                    this.floaters.add(this.player.x, this.player.y - 15, "아카라에게 다가갑니다...", "#aaaaaa");
+                }
+                return;
+            }
+        }
+
         const cartDest = this.screenToCartesian(sx, sy);
         let clickedMonster = null;
         for (const m of this.monsters) {
@@ -1540,6 +1728,11 @@ class Game {
     handleMonsterKill(monster) {
         sfx.playMonsterDeath();
         this.player.kills++;
+        
+        // Award gold based on monster level
+        const goldDropped = Math.floor(monster.level * (5 + Math.random() * 5));
+        this.player.gold += goldDropped;
+        this.floaters.add(monster.x, monster.y - 10, `+${goldDropped} G`, '#ffd700');
         
         const isLeveledUp = this.player.gainExp(monster.expValue);
         if (isLeveledUp) {
@@ -1789,7 +1982,21 @@ class Game {
         document.getElementById('xp-fill').style.width = `${xpPercent}%`;
 
         document.getElementById('hud-level').textContent = this.player.level.toString();
-        document.getElementById('potion-count').textContent = this.player.potions.toString();
+        document.getElementById('potion-count').textContent = this.player.potions.length.toString();
+
+        const goldEl = document.getElementById('stat-gold');
+        if (goldEl) {
+            goldEl.textContent = `${this.player.gold} G`;
+        }
+
+        const buyButtons = document.querySelectorAll('.buy-btn');
+        const shopPrices = [15, 30, 60, 125];
+        const isInvFull = !this.inventory.includes(null);
+        buyButtons.forEach(btn => {
+            const btnIdx = parseInt(btn.dataset.index);
+            const price = shopPrices[btnIdx] || 0;
+            btn.disabled = (this.player.gold < price || isInvFull);
+        });
 
         document.getElementById('stat-level').textContent = this.player.level.toString();
         document.getElementById('stat-atk').textContent = this.player.atk.toString();
@@ -1847,6 +2054,21 @@ class Game {
 
         if (this.dungeonPortal) this.dungeonPortal.update();
         if (this.townPortal) this.townPortal.update();
+        if (this.currentMap === 'town') {
+            this.npc.update();
+            const dist = Math.hypot(this.player.x - this.npc.x, this.player.y - this.npc.y);
+            if (dist > 80) {
+                const shopPanel = document.getElementById('shop-panel');
+                if (shopPanel && !shopPanel.classList.contains('hidden')) {
+                    shopPanel.classList.add('hidden');
+                }
+            }
+        } else {
+            const shopPanel = document.getElementById('shop-panel');
+            if (shopPanel && !shopPanel.classList.contains('hidden')) {
+                shopPanel.classList.add('hidden');
+            }
+        }
 
         // Check portal collisions
         if (this.currentMap === 'dungeon' && this.dungeonPortal) {
@@ -1954,6 +2176,7 @@ class Game {
             if (this.townPortal) {
                 entities.push({ type: 'portal', ref: this.townPortal, depth: this.townPortal.x + this.townPortal.y });
             }
+            entities.push({ type: 'npc', ref: this.npc, depth: this.npc.x + this.npc.y });
         }
 
         entities.sort((a, b) => a.depth - b.depth);
