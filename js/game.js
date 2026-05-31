@@ -1112,6 +1112,10 @@ class Game {
                 }
             });
 
+            slot.addEventListener('mouseleave', () => {
+                descArea.textContent = '슬롯 위의 아이템 정보를 보려면 마우스를 올리세요.';
+            });
+
             slot.addEventListener('click', (e) => {
                 const idx = parseInt(slot.dataset.slot);
                 const item = this.inventory[idx];
@@ -1301,6 +1305,11 @@ class Game {
             attempts++;
         } while ((this.map.isSolid(rx, ry) || Math.hypot(rx - this.player.x, ry - this.player.y) < 200) && attempts < 50);
 
+        // Abort spawning if no valid coordinates were found
+        if (this.map.isSolid(rx, ry) || Math.hypot(rx - this.player.x, ry - this.player.y) < 200) {
+            return;
+        }
+
         const mLvl = Math.max(1, this.player.level + Math.floor(Math.random() * 3) - 1);
         this.monsters.push(new Monster(rx, ry, mLvl));
     }
@@ -1487,15 +1496,15 @@ class Game {
         this.map.render(this.ctx, this.camera, this.canvas.width, this.canvas.height);
 
         const entities = [];
-        entities.push({ type: 'player', ref: this.player, y: this.player.y });
+        entities.push({ type: 'player', ref: this.player, depth: this.player.x + this.player.y });
         for (const m of this.monsters) {
-            entities.push({ type: 'monster', ref: m, y: m.y });
+            entities.push({ type: 'monster', ref: m, depth: m.x + m.y });
         }
         for (const p of this.projectiles) {
-            entities.push({ type: 'projectile', ref: p, y: p.y });
+            entities.push({ type: 'projectile', ref: p, depth: p.x + p.y });
         }
 
-        entities.sort((a, b) => a.y - b.y);
+        entities.sort((a, b) => a.depth - b.depth);
 
         for (const ent of entities) {
             ent.ref.render(this.ctx, this.camera, this.canvas.width, this.canvas.height);
