@@ -199,13 +199,14 @@ class Camera {
 // 3. ISOMETRIC TILE MAP ENGINE
 // ==========================================
 class TileMap {
-    constructor(tileSize = 64) {
+    constructor(tileSize = 64, type = 'dungeon') {
         this.tileSize = tileSize;
-        this.cols = 30;
-        this.rows = 30;
+        this.type = type;
+        this.cols = type === 'town' ? 16 : 30;
+        this.rows = type === 'town' ? 16 : 30;
         
         this.tileImage = new Image();
-        this.tileImage.src = 'assets/tile_stone.png';
+        this.tileImage.src = type === 'town' ? 'assets/tile_grass.png' : 'assets/tile_stone.png';
         this.isImageLoaded = false;
         this.tileImage.onload = () => {
             this.isImageLoaded = true;
@@ -222,7 +223,7 @@ class TileMap {
                 if (r === 0 || r === this.rows - 1 || c === 0 || c === this.cols - 1) {
                     rowData.push(1);
                 } 
-                else if (Math.random() < 0.05 && (r > 12 && r < 18 && c > 12 && c < 18) === false) {
+                else if (this.type === 'dungeon' && Math.random() < 0.05 && (r > 12 && r < 18 && c > 12 && c < 18) === false) {
                     rowData.push(1);
                 } else {
                     rowData.push(0);
@@ -288,8 +289,8 @@ class TileMap {
                             imgHeight
                         );
                     } else {
-                        ctx.fillStyle = '#1c1712';
-                        ctx.strokeStyle = '#2b2118';
+                        ctx.fillStyle = this.type === 'town' ? '#152515' : '#1c1712';
+                        ctx.strokeStyle = this.type === 'town' ? '#223822' : '#2b2118';
                         ctx.lineWidth = 1;
                         ctx.beginPath();
                         ctx.moveTo(screenX, screenY - this.tileSize / 2);
@@ -304,7 +305,7 @@ class TileMap {
                     const heightOffset = 40;
                     const w = this.tileSize;
                     
-                    ctx.fillStyle = '#2d241e';
+                    ctx.fillStyle = this.type === 'town' ? '#223b22' : '#2d241e';
                     ctx.beginPath();
                     ctx.moveTo(screenX, screenY - w / 2 - heightOffset);
                     ctx.lineTo(screenX + w, screenY - heightOffset);
@@ -313,7 +314,7 @@ class TileMap {
                     ctx.closePath();
                     ctx.fill();
 
-                    ctx.fillStyle = '#1e1814';
+                    ctx.fillStyle = this.type === 'town' ? '#172b17' : '#1e1814';
                     ctx.beginPath();
                     ctx.moveTo(screenX - w, screenY - heightOffset);
                     ctx.lineTo(screenX, screenY + w / 2 - heightOffset);
@@ -322,7 +323,7 @@ class TileMap {
                     ctx.closePath();
                     ctx.fill();
 
-                    ctx.fillStyle = '#15100d';
+                    ctx.fillStyle = this.type === 'town' ? '#0f1f0f' : '#15100d';
                     ctx.beginPath();
                     ctx.moveTo(screenX, screenY + w / 2 - heightOffset);
                     ctx.lineTo(screenX + w, screenY - heightOffset);
@@ -331,7 +332,7 @@ class TileMap {
                     ctx.closePath();
                     ctx.fill();
 
-                    ctx.strokeStyle = '#4a3b30';
+                    ctx.strokeStyle = this.type === 'town' ? '#325232' : '#4a3b30';
                     ctx.lineWidth = 1.5;
                     ctx.stroke();
                 }
@@ -959,6 +960,65 @@ class Projectile {
 }
 
 // ==========================================
+// 6.5. TOWN PORTAL ENGINE
+// ==========================================
+class Portal {
+    constructor(x, y, targetMap) {
+        this.x = x;
+        this.y = y;
+        this.targetMap = targetMap;
+        this.radius = 16;
+        this.animTimer = 0;
+    }
+
+    update() {
+        this.animTimer += 0.05;
+    }
+
+    render(ctx, camera, viewWidth, viewHeight) {
+        const isoCam = camera.getIsoOffset();
+        const halfWidth = viewWidth / 2;
+        const halfHeight = viewHeight / 2;
+
+        const screenX = (this.x - this.y) - isoCam.x + halfWidth;
+        const screenY = (this.x + this.y) * 0.5 - isoCam.y + halfHeight;
+
+        ctx.save();
+        const pulse = Math.sin(this.animTimer) * 3;
+        ctx.shadowBlur = 20 + pulse;
+        ctx.shadowColor = '#00aaff';
+
+        // Outer ring
+        ctx.fillStyle = 'rgba(0, 170, 255, 0.2)';
+        ctx.strokeStyle = '#00ffff';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.ellipse(screenX, screenY, 20 + pulse, 10 + pulse / 2, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        // Inner core
+        const grad = ctx.createRadialGradient(screenX, screenY, 1, screenX, screenY, 12);
+        grad.addColorStop(0, '#ffffff');
+        grad.addColorStop(0.5, '#00ffff');
+        grad.addColorStop(1, 'rgba(0, 128, 255, 0)');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.ellipse(screenX, screenY - 2, 12, 6, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Swirling portal effect
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.ellipse(screenX, screenY, 8 + pulse, 4 + pulse / 2, this.animTimer, 0, Math.PI);
+        ctx.stroke();
+
+        ctx.restore();
+    }
+}
+
+// ==========================================
 // 7. FLOATING TEXT EFFECTS ENGINE
 // ==========================================
 class FloaterManager {
@@ -1057,7 +1117,10 @@ class Game {
         this.ctx = this.canvas.getContext('2d');
         this.isGameRunning = false;
 
-        this.map = new TileMap(64);
+        this.currentMap = 'dungeon';
+        this.dungeonMap = new TileMap(64, 'dungeon');
+        this.townMap = new TileMap(64, 'town');
+        this.map = this.dungeonMap;
         
         const spawnCartX = 15 * this.map.tileSize + this.map.tileSize / 2;
         const spawnCartY = 15 * this.map.tileSize + this.map.tileSize / 2;
@@ -1067,6 +1130,8 @@ class Game {
 
         this.monsters = [];
         this.projectiles = [];
+        this.dungeonPortal = null;
+        this.townPortal = null;
         this.floaters = new FloaterManager();
         this.spawnTimer = 0;
 
@@ -1337,6 +1402,8 @@ class Game {
                 document.getElementById('stats-panel').classList.toggle('hidden');
             } else if (key === 'S') {
                 document.getElementById('skills-panel').classList.toggle('hidden');
+            } else if (key === 'T') {
+                this.triggerTownPortal();
             }
         });
     }
@@ -1393,6 +1460,10 @@ class Game {
     }
 
     handleRightClick(sx, sy) {
+        if (this.currentMap === 'town') {
+            this.floaters.add(this.player.x, this.player.y - 15, "마을은 안전지대입니다.", "#00ffff");
+            return;
+        }
         const effectiveSlvl = this.player.skills.fireball + (this.player.fireballBonus || 0);
         const damageMultiplier = 1.8 + (effectiveSlvl - 1) * 0.4;
         const spellCost = 15 + (effectiveSlvl - 1) * 2.5;
@@ -1680,6 +1751,31 @@ class Game {
         this.floaters.add(this.player.x, this.player.y - 20, "LEVEL UP!", '#d4af37');
     }
 
+    changeMap(newMapType) {
+        this.currentMap = newMapType;
+        this.map = newMapType === 'town' ? this.townMap : this.dungeonMap;
+    }
+
+    triggerTownPortal() {
+        if (!this.isGameRunning) return;
+        if (this.currentMap === 'town') {
+            this.floaters.add(this.player.x, this.player.y - 15, "마을에서는 차원문을 열 수 없습니다.", "#00ffff");
+            return;
+        }
+
+        sfx.playPotion();
+        
+        // Spawn portal at player's location in dungeon
+        this.dungeonPortal = new Portal(this.player.x, this.player.y, 'town');
+        
+        // Spawn portal at town center (8, 8)
+        const tx = 8 * this.map.tileSize + this.map.tileSize / 2;
+        const ty = 8 * this.map.tileSize + this.map.tileSize / 2;
+        this.townPortal = new Portal(tx, ty, 'dungeon');
+        
+        this.floaters.add(this.player.x, this.player.y - 15, "차원문이 열렸습니다!", "#00ffff");
+    }
+
     updateUI() {
         const healthPercent = (this.player.hp / this.player.maxHp) * 100;
         document.getElementById('health-liquid').style.height = `${healthPercent}%`;
@@ -1748,56 +1844,88 @@ class Game {
         // --- UPDATE STEP ---
         this.player.update(this.map);
         this.camera.update(this.player.x, this.player.y);
-        
-        this.spawnTimer++;
-        if (this.spawnTimer >= SPAWN_INTERVAL) {
-            this.spawnTimer = 0;
-            this.spawnMonster();
+
+        if (this.dungeonPortal) this.dungeonPortal.update();
+        if (this.townPortal) this.townPortal.update();
+
+        // Check portal collisions
+        if (this.currentMap === 'dungeon' && this.dungeonPortal) {
+            if (Math.hypot(this.player.x - this.dungeonPortal.x, this.player.y - this.dungeonPortal.y) < 24) {
+                this.changeMap('town');
+                this.player.x = this.townPortal.x + 32;
+                this.player.y = this.townPortal.y + 32;
+                this.player.targetX = this.player.x;
+                this.player.targetY = this.player.y;
+                sfx.playPotion();
+                this.floaters.add(this.player.x, this.player.y - 15, "마을 도착", "#00ffff");
+            }
+        } else if (this.currentMap === 'town' && this.townPortal) {
+            if (Math.hypot(this.player.x - this.townPortal.x, this.player.y - this.townPortal.y) < 24) {
+                const targetX = this.dungeonPortal.x;
+                const targetY = this.dungeonPortal.y;
+                this.dungeonPortal = null;
+                this.townPortal = null;
+                this.changeMap('dungeon');
+                this.player.x = targetX + 32;
+                this.player.y = targetY + 32;
+                this.player.targetX = this.player.x;
+                this.player.targetY = this.player.y;
+                sfx.playPotion();
+                this.floaters.add(this.player.x, this.player.y - 15, "던전 진입", "#ff5500");
+            }
         }
 
-        for (let i = this.projectiles.length - 1; i >= 0; i--) {
-            const p = this.projectiles.at(i);
-            p.update(this.map);
+        if (this.currentMap === 'dungeon') {
+            this.spawnTimer++;
+            if (this.spawnTimer >= SPAWN_INTERVAL) {
+                this.spawnTimer = 0;
+                this.spawnMonster();
+            }
 
-            let hit = false;
-            for (const m of this.monsters) {
-                if (m.state === 'death') continue;
-                if (Math.hypot(p.x - m.x, p.y - m.y) < p.radius + m.radius) {
-                    const expGained = m.takeDamage(p.damage, this.floaters);
-                    if (expGained > 0) {
-                        this.handleMonsterKill(m);
+            for (let i = this.projectiles.length - 1; i >= 0; i--) {
+                const p = this.projectiles.at(i);
+                p.update(this.map);
+
+                let hit = false;
+                for (const m of this.monsters) {
+                    if (m.state === 'death') continue;
+                    if (Math.hypot(p.x - m.x, p.y - m.y) < p.radius + m.radius) {
+                        const expGained = m.takeDamage(p.damage, this.floaters);
+                        if (expGained > 0) {
+                            this.handleMonsterKill(m);
+                        }
+                        hit = true;
+                        this.updateUI();
+                        break;
                     }
-                    hit = true;
+                }
+
+                if (hit || p.life <= 0) {
+                    this.projectiles.splice(i, 1);
+                }
+            }
+
+            for (let i = this.monsters.length - 1; i >= 0; i--) {
+                const m = this.monsters.at(i);
+                const dmgToPlayer = m.update(this.player, this.map);
+
+                if (dmgToPlayer > 0 && this.player.hp > 0) {
+                    this.player.hp = Math.max(0, this.player.hp - dmgToPlayer);
+                    this.floaters.add(this.player.x, this.player.y - 12, `-${dmgToPlayer}`, '#ff3333');
+                    sfx.playHit(); 
                     this.updateUI();
-                    break;
+
+                    if (this.player.hp <= 0) {
+                        this.floaters.add(this.player.x, this.player.y - 15, "사망!", "#ff0000");
+                        this.isGameRunning = false;
+                        alert("사망하셨습니다! 확인을 누르면 재시작합니다.");
+                        window.location.reload();
+                    }
                 }
-            }
 
-            if (hit || p.life <= 0) {
-                this.projectiles.splice(i, 1);
-            }
-        }
-
-        for (let i = this.monsters.length - 1; i >= 0; i--) {
-            const m = this.monsters.at(i);
-            const dmgToPlayer = m.update(this.player, this.map);
-
-            if (dmgToPlayer > 0 && this.player.hp > 0) {
-                this.player.hp = Math.max(0, this.player.hp - dmgToPlayer);
-                this.floaters.add(this.player.x, this.player.y - 12, `-${dmgToPlayer}`, '#ff3333');
-                sfx.playHit(); 
-                this.updateUI();
-
-                if (this.player.hp <= 0) {
-                    this.floaters.add(this.player.x, this.player.y - 15, "사망!", "#ff0000");
-                    this.isGameRunning = false;
-                    alert("사망하셨습니다! 확인을 누르면 재시작합니다.");
-                    window.location.reload();
+                if (m.state === 'death' && m.deathTimer <= 0) {
+                    this.monsters.splice(i, 1);
                 }
-            }
-
-            if (m.state === 'death' && m.deathTimer <= 0) {
-                this.monsters.splice(i, 1);
             }
         }
 
@@ -1811,11 +1939,21 @@ class Game {
 
         const entities = [];
         entities.push({ type: 'player', ref: this.player, depth: this.player.x + this.player.y });
-        for (const m of this.monsters) {
-            entities.push({ type: 'monster', ref: m, depth: m.x + m.y });
-        }
-        for (const p of this.projectiles) {
-            entities.push({ type: 'projectile', ref: p, depth: p.x + p.y });
+        
+        if (this.currentMap === 'dungeon') {
+            for (const m of this.monsters) {
+                entities.push({ type: 'monster', ref: m, depth: m.x + m.y });
+            }
+            for (const p of this.projectiles) {
+                entities.push({ type: 'projectile', ref: p, depth: p.x + p.y });
+            }
+            if (this.dungeonPortal) {
+                entities.push({ type: 'portal', ref: this.dungeonPortal, depth: this.dungeonPortal.x + this.dungeonPortal.y });
+            }
+        } else if (this.currentMap === 'town') {
+            if (this.townPortal) {
+                entities.push({ type: 'portal', ref: this.townPortal, depth: this.townPortal.x + this.townPortal.y });
+            }
         }
 
         entities.sort((a, b) => a.depth - b.depth);
