@@ -458,7 +458,7 @@ class Player {
         let bonusMp = 0;
 
         inventory.forEach(item => {
-            if (!item) return;
+            if (!item || !item.equipped) return;
             if (item.type === 'weapon') {
                 bonusAtk += item.value;
             } else if (item.type === 'armor') {
@@ -1107,10 +1107,32 @@ class Game {
                 const item = this.inventory.at(idx);
                 if (item) {
                     descArea.innerHTML = '';
+                    
+                    const headerGroup = document.createElement('div');
+                    headerGroup.style.display = 'flex';
+                    headerGroup.style.justifyContent = 'space-between';
+                    headerGroup.style.alignItems = 'center';
+
                     const strong = document.createElement('strong');
                     strong.style.color = item.color;
                     strong.textContent = item.name;
-                    descArea.appendChild(strong);
+                    headerGroup.appendChild(strong);
+
+                    if (item.equipped) {
+                        const eqSpan = document.createElement('span');
+                        eqSpan.style.color = '#d4af37';
+                        eqSpan.style.fontWeight = 'bold';
+                        eqSpan.style.fontSize = '10px';
+                        eqSpan.textContent = '[장착 중]';
+                        headerGroup.appendChild(eqSpan);
+                    } else if (item.type !== 'potion') {
+                        const eqSpan = document.createElement('span');
+                        eqSpan.style.color = '#888';
+                        eqSpan.style.fontSize = '10px';
+                        eqSpan.textContent = '[장착 가능]';
+                        headerGroup.appendChild(eqSpan);
+                    }
+                    descArea.appendChild(headerGroup);
 
                     descArea.appendChild(document.createTextNode(` (${item.rarity.toUpperCase()})`));
                     descArea.appendChild(document.createElement('br'));
@@ -1120,7 +1142,11 @@ class Game {
                     const span = document.createElement('span');
                     span.style.color = '#888';
                     span.style.fontSize = '10px';
-                    span.textContent = '(클릭하여 사용/파괴)';
+                    if (item.type === 'potion') {
+                        span.textContent = '(클릭: 벨트에 등록 | Shift+클릭: 파괴)';
+                    } else {
+                        span.textContent = item.equipped ? '(클릭: 장착 해제 | Shift+클릭: 파괴)' : '(클릭: 아이템 장착 | Shift+클릭: 파괴)';
+                    }
                     descArea.appendChild(span);
                 } else {
                     descArea.textContent = '빈 슬롯';
@@ -1137,16 +1163,38 @@ class Game {
                 if (!item) return;
 
                 sfx.init();
-                if (item.type === 'potion') {
-                    this.player.potions++;
-                    Reflect.set(this.inventory, idx, null);
-                    sfx.playPotion();
-                    this.floaters.add(this.player.x, this.player.y - 15, "물약 +1", "#00ff00");
-                } else {
+
+                if (e.shiftKey) {
+                    // Shift + Click: Destroy item
                     if (confirm(`'${item.name}'을(를) 파괴하시겠습니까?`)) {
                         Reflect.set(this.inventory, idx, null);
                         sfx.playMonsterDeath(); 
                         this.floaters.add(this.player.x, this.player.y - 15, "파괴됨", "#ff5555");
+                    }
+                } else {
+                    // Regular Click
+                    if (item.type === 'potion') {
+                        this.player.potions++;
+                        Reflect.set(this.inventory, idx, null);
+                        sfx.playPotion();
+                        this.floaters.add(this.player.x, this.player.y - 15, "물약 +1", "#00ff00");
+                    } else {
+                        // Weapon/Armor Equip Toggle
+                        if (item.equipped) {
+                            item.equipped = false;
+                            sfx.playMonsterDeath(); 
+                            this.floaters.add(this.player.x, this.player.y - 15, "장착 해제", "#aaaaaa");
+                        } else {
+                            // Unequip any other item of the same type first
+                            this.inventory.forEach(otherItem => {
+                                if (otherItem && otherItem.type === item.type) {
+                                    otherItem.equipped = false;
+                                }
+                            });
+                            item.equipped = true;
+                            sfx.playPotion(); 
+                            this.floaters.add(this.player.x, this.player.y - 15, "장착됨!", "#d4af37");
+                        }
                     }
                 }
                 
@@ -1353,7 +1401,6 @@ class Game {
             const item = this.inventory.at(i);
             if (item) {
                 slot.classList.add('occupied');
-                slot.style.borderColor = item.color;
                 if (item.type === 'weapon') {
                     slot.innerHTML = `<div style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 24px; transform: rotate(45deg);">🗡️</div>`;
                 } else if (item.type === 'armor') {
@@ -1361,9 +1408,28 @@ class Game {
                 } else if (item.type === 'potion') {
                     slot.innerHTML = `<div style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 24px;">🧪</div>`;
                 }
+
+                if (item.equipped) {
+                    slot.style.borderColor = '#d4af37'; 
+                    slot.style.boxShadow = `inset 0 0 8px ${item.color}, 0 0 10px ${item.color}`;
+                    const badge = document.createElement('span');
+                    badge.style.position = 'absolute';
+                    badge.style.top = '2px';
+                    badge.style.right = '4px';
+                    badge.style.fontSize = '10px';
+                    badge.style.color = '#d4af37';
+                    badge.style.fontWeight = 'bold';
+                    badge.style.textShadow = '1px 1px 2px #000';
+                    badge.textContent = 'E';
+                    slot.appendChild(badge);
+                } else {
+                    slot.style.borderColor = item.color;
+                    slot.style.boxShadow = '';
+                }
             } else {
                 slot.classList.remove('occupied');
                 slot.style.borderColor = '';
+                slot.style.boxShadow = '';
                 slot.innerHTML = '';
             }
         });
@@ -1381,8 +1447,9 @@ class Game {
         }
 
         if (slotIdx !== -1) {
-            Reflect.set(this.inventory, slotIdx, item);
-            this.floaters.add(this.player.x, this.player.y - 25, `${item.name} 획득!`, item.color);
+            const clonedItem = { ...item, equipped: false };
+            Reflect.set(this.inventory, slotIdx, clonedItem);
+            this.floaters.add(this.player.x, this.player.y - 25, `${clonedItem.name} 획득!`, clonedItem.color);
             
             this.syncInventoryUI();
             this.player.recalculateStats(this.inventory);
