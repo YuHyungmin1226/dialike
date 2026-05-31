@@ -15,13 +15,13 @@ function makeTransparent(img, threshold = 25) {
     const data = imgData.data;
 
     for (let i = 0; i < data.length; i += 4) {
-        const r = data[i];
-        const g = data[i + 1];
-        const b = data[i + 2];
+        const r = data.at(i);
+        const g = data.at(i + 1);
+        const b = data.at(i + 2);
         
         // keying black pixels
         if (r < threshold && g < threshold && b < threshold) {
-            data[i + 3] = 0; // alpha = 0
+            Reflect.set(data, i + 3, 0); // alpha = 0
         }
     }
     ctx.putImageData(imgData, 0, 0);
@@ -262,7 +262,7 @@ class TileMap {
 
         for (let r = 0; r < this.rows; r++) {
             for (let c = 0; c < this.cols; c++) {
-                const tileType = this.grid[r][c];
+                const tileType = this.grid.at(r).at(c);
                 const cartX = c * this.tileSize + this.tileSize / 2;
                 const cartY = r * this.tileSize + this.tileSize / 2;
 
@@ -542,7 +542,7 @@ class Player {
         const screenY = isoPos.y - isoCam.y + halfHeight;
 
         const dirRows = [6, 7, 0, 1, 2, 3, 4, 5]; 
-        const row = dirRows[this.direction];
+        const row = dirRows.at(this.direction);
 
         if (this.isLoaded && this.processedSheet) {
             const frameCols = 8;
@@ -666,7 +666,7 @@ class Player {
             { x: 0, y: -1 }, 
             { x: 2, y: 0 }   
         ];
-        return offsets[this.direction] || { x: 0, y: 0 };
+        return offsets.at(this.direction) || { x: 0, y: 0 };
     }
 }
 
@@ -797,7 +797,7 @@ class Monster {
             const frameH = this.spriteSheet.height / frameRows;
 
             const dirRows = [6, 7, 0, 1, 2, 3, 4, 5]; 
-            const row = dirRows[this.direction];
+            const row = dirRows.at(this.direction);
             
             let col = 0;
             if (this.state === 'walk') {
@@ -958,7 +958,7 @@ class FloaterManager {
 
     update() {
         for (let i = this.floaters.length - 1; i >= 0; i--) {
-            const f = this.floaters[i];
+            const f = this.floaters.at(i);
             f.life--;
             f.worldY -= 0.6;
             if (f.life <= 0) {
@@ -1104,9 +1104,24 @@ class Game {
         slots.forEach(slot => {
             slot.addEventListener('mouseenter', (e) => {
                 const idx = parseInt(e.target.dataset.slot);
-                const item = this.inventory[idx];
+                const item = this.inventory.at(idx);
                 if (item) {
-                    descArea.innerHTML = `<strong style="color: ${item.color}">${item.name}</strong> (${item.rarity.toUpperCase()})<br>${item.stat}<br><span style="color: #888; font-size: 10px;">(클릭하여 사용/파괴)</span>`;
+                    descArea.innerHTML = '';
+                    const strong = document.createElement('strong');
+                    strong.style.color = item.color;
+                    strong.textContent = item.name;
+                    descArea.appendChild(strong);
+
+                    descArea.appendChild(document.createTextNode(` (${item.rarity.toUpperCase()})`));
+                    descArea.appendChild(document.createElement('br'));
+                    descArea.appendChild(document.createTextNode(item.stat));
+                    descArea.appendChild(document.createElement('br'));
+
+                    const span = document.createElement('span');
+                    span.style.color = '#888';
+                    span.style.fontSize = '10px';
+                    span.textContent = '(클릭하여 사용/파괴)';
+                    descArea.appendChild(span);
                 } else {
                     descArea.textContent = '빈 슬롯';
                 }
@@ -1118,18 +1133,18 @@ class Game {
 
             slot.addEventListener('click', (e) => {
                 const idx = parseInt(slot.dataset.slot);
-                const item = this.inventory[idx];
+                const item = this.inventory.at(idx);
                 if (!item) return;
 
                 sfx.init();
                 if (item.type === 'potion') {
                     this.player.potions++;
-                    this.inventory[idx] = null;
+                    Reflect.set(this.inventory, idx, null);
                     sfx.playPotion();
                     this.floaters.add(this.player.x, this.player.y - 15, "물약 +1", "#00ff00");
                 } else {
                     if (confirm(`'${item.name}'을(를) 파괴하시겠습니까?`)) {
-                        this.inventory[idx] = null;
+                        Reflect.set(this.inventory, idx, null);
                         sfx.playMonsterDeath(); 
                         this.floaters.add(this.player.x, this.player.y - 15, "파괴됨", "#ff5555");
                     }
@@ -1335,7 +1350,7 @@ class Game {
     syncInventoryUI() {
         const slots = document.querySelectorAll('.inv-slot');
         slots.forEach((slot, i) => {
-            const item = this.inventory[i];
+            const item = this.inventory.at(i);
             if (item) {
                 slot.classList.add('occupied');
                 slot.style.borderColor = item.color;
@@ -1355,18 +1370,18 @@ class Game {
     }
 
     lootItem() {
-        const item = ITEM_POOL[Math.floor(Math.random() * ITEM_POOL.length)];
+        const item = ITEM_POOL.at(Math.floor(Math.random() * ITEM_POOL.length));
         
         let slotIdx = -1;
         for (let i = 0; i < this.inventory.length; i++) {
-            if (this.inventory[i] === null) {
+            if (this.inventory.at(i) === null) {
                 slotIdx = i;
                 break;
             }
         }
 
         if (slotIdx !== -1) {
-            this.inventory[slotIdx] = item;
+            Reflect.set(this.inventory, slotIdx, item);
             this.floaters.add(this.player.x, this.player.y - 25, `${item.name} 획득!`, item.color);
             
             this.syncInventoryUI();
@@ -1442,7 +1457,7 @@ class Game {
         }
 
         for (let i = this.projectiles.length - 1; i >= 0; i--) {
-            const p = this.projectiles[i];
+            const p = this.projectiles.at(i);
             p.update(this.map);
 
             let hit = false;
@@ -1465,7 +1480,7 @@ class Game {
         }
 
         for (let i = this.monsters.length - 1; i >= 0; i--) {
-            const m = this.monsters[i];
+            const m = this.monsters.at(i);
             const dmgToPlayer = m.update(this.player, this.map);
 
             if (dmgToPlayer > 0 && this.player.hp > 0) {
