@@ -1232,8 +1232,8 @@ class Game {
         this.spawnTimer = 0;
 
         const townCenterCartX = 8 * this.townMap.tileSize + this.townMap.tileSize / 2;
-        const townCenterCartY = 8 * this.townMap.tileSize + this.townMap.tileSize / 2;
-        this.npc = new Npc(townCenterCartX, townCenterCartY, "아카라");
+        const townNpcCartY = 5 * this.townMap.tileSize + this.townMap.tileSize / 2;
+        this.npc = new Npc(townCenterCartX, townNpcCartY, "아카라");
 
         this.inventory = new Array(16).fill(null);
         this.mouse = { x: 0, y: 0, isDown: false, button: -1 };
