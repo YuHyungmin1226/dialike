@@ -110,6 +110,32 @@
                 </div>
             </div>
 
+            <!-- Skills Panel -->
+            <div id="skills-panel" class="glass-panel hidden">
+                <div class="panel-header">
+                    <h3>스킬 정보</h3>
+                    <button class="close-btn" id="close-skills-btn">&times;</button>
+                </div>
+                <div class="panel-body">
+                    <div class="skill-upgrade-group">
+                        <div class="skill-upgrade-info">
+                            <span class="skill-upgrade-name text-gold">파이어볼</span>
+                            <span id="skill-fireball-level" class="skill-upgrade-level">LV 1</span>
+                        </div>
+                        <div class="skill-upgrade-controls">
+                            <span id="skill-fireball-desc" class="skill-upgrade-desc">공격력의 1.8배 피해 (마나 15 소모)</span>
+                            <button class="stat-up-btn" id="up-fireball" disabled>+</button>
+                        </div>
+                    </div>
+                    <hr class="gothic-divider">
+                    <div class="stat-group">
+                        <span class="stat-label">남은 스킬 포인트:</span>
+                        <span id="skill-points" class="stat-value text-gold">0</span>
+                    </div>
+                </div>
+            </div>
+
+
             <!-- Diablo Classic HUD Bar (Bottom) -->
             <div id="hud-bar">
                 <!-- Health Orb (Left) -->
@@ -133,6 +159,7 @@
                         <div class="action-btn-group">
                             <button id="toggle-stats-btn" title="캐릭터 정보 (C)">C</button>
                             <button id="toggle-inv-btn" title="인벤토리 (I)">I</button>
+                            <button id="toggle-skills-btn" title="스킬 정보 (S)">S</button>
                         </div>
 
                         <!-- Skill / Potion slots -->

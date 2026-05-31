@@ -367,6 +367,9 @@ class Player {
         this.exp = 0;
         this.nextExp = 100;
         this.statPoints = 0;
+        this.skillPoints = 0;
+        this.skills = { fireball: 1 };
+        this.fireballBonus = 0;
         this.potions = 5;
         this.kills = 0;
 
@@ -442,6 +445,7 @@ class Player {
             this.exp -= this.nextExp;
             this.level++;
             this.statPoints += 5;
+            this.skillPoints += 1;
             this.baseMaxHp += 15;
             this.baseMaxMp += 10;
             this.hp = this.maxHp;
@@ -456,9 +460,13 @@ class Player {
         let bonusAtk = 0;
         let bonusHp = 0;
         let bonusMp = 0;
+        let skillFireballBonus = 0;
 
         inventory.forEach(item => {
             if (!item || !item.equipped) return;
+            if (item.skillFireballBonus) {
+                skillFireballBonus += item.skillFireballBonus;
+            }
             if (item.type === 'weapon') {
                 bonusAtk += item.value;
             } else if (item.type === 'armor') {
@@ -473,9 +481,20 @@ class Player {
         this.atk = this.baseAtk + bonusAtk;
         this.maxHp = this.baseMaxHp + bonusHp;
         this.maxMp = this.baseMaxMp + bonusMp;
+        this.fireballBonus = skillFireballBonus;
 
         if (this.hp > this.maxHp) this.hp = this.maxHp;
         if (this.mp > this.maxMp) this.mp = this.maxMp;
+    }
+
+    addSkillPoint(skillKey) {
+        if (this.skillPoints <= 0) return false;
+        const lvl = this.skills[skillKey];
+        if (lvl === undefined) return false;
+        if (lvl >= 20) return false;
+        this.skillPoints--;
+        this.skills[skillKey] = lvl + 1;
+        return true;
     }
 
     update(map) {
@@ -878,12 +897,13 @@ class Monster {
 // 6. FIREBALL PROJECTILE ENGINE
 // ==========================================
 class Projectile {
-    constructor(x, y, tx, ty, damage = 25) {
+    constructor(x, y, tx, ty, damage = 25, level = 1) {
         this.x = x;
         this.y = y;
-        this.radius = 8;
+        this.radius = 8 + (level - 1) * 0.5;
         this.damage = damage;
         this.life = 70;
+        this.level = level;
 
         const dx = tx - x;
         const dy = ty - y;
@@ -913,10 +933,10 @@ class Projectile {
         const screenY = (this.x + this.y) * 0.5 - isoCam.y + halfHeight;
 
         ctx.save();
-        ctx.shadowBlur = 15;
+        ctx.shadowBlur = 15 + (this.level - 1) * 2;
         ctx.shadowColor = '#ff4500';
 
-        const grad = ctx.createRadialGradient(screenX, screenY, 1, screenX, screenY, 12);
+        const grad = ctx.createRadialGradient(screenX, screenY, 1, screenX, screenY, this.radius + 4);
         grad.addColorStop(0, '#ffffff');
         grad.addColorStop(0.3, '#ffcc00');
         grad.addColorStop(0.6, '#ff4500');
@@ -924,14 +944,14 @@ class Projectile {
         ctx.fillStyle = grad;
 
         ctx.beginPath();
-        ctx.arc(screenX, screenY, 12, 0, Math.PI * 2);
+        ctx.arc(screenX, screenY, this.radius + 4, 0, Math.PI * 2);
         ctx.fill();
 
         ctx.fillStyle = 'rgba(255, 69, 0, 0.4)';
         ctx.beginPath();
         const trailX = screenX - Math.cos(this.angle) * 10;
         const trailY = screenY - Math.sin(this.angle) * 5;
-        ctx.arc(trailX, trailY, 6, 0, Math.PI * 2);
+        ctx.arc(trailX, trailY, this.radius * 0.75, 0, Math.PI * 2);
         ctx.fill();
 
         ctx.restore();
@@ -1027,7 +1047,8 @@ const SUFFIXES = [
     { name: '의 수호', slot: 'shield|helmet|chest', value: 5, statType: 'HP' },
     { name: '의 생명', slot: 'shield|helmet|chest', value: 12, statType: 'HP' },
     { name: '의 마나', slot: 'helmet|chest', value: 10, statType: 'MP' },
-    { name: '의 힘', slot: 'weapon|shield|helmet|chest', value: 6, statType: 'HP' }
+    { name: '의 힘', slot: 'weapon|shield|helmet|chest', value: 6, statType: 'HP' },
+    { name: '의 마법사', slot: 'weapon|helmet|chest', value: 1, statType: 'SKILL_FIREBALL' }
 ];
 
 class Game {
@@ -1084,6 +1105,24 @@ class Game {
         };
         toggleInvBtn.addEventListener('click', toggleInv);
         closeInvBtn.addEventListener('click', () => invPanel.classList.add('hidden'));
+
+        const toggleSkillsBtn = document.getElementById('toggle-skills-btn');
+        const skillsPanel = document.getElementById('skills-panel');
+        const closeSkillsBtn = document.getElementById('close-skills-btn');
+
+        const toggleSkills = () => {
+            sfx.init();
+            skillsPanel.classList.toggle('hidden');
+        };
+        toggleSkillsBtn.addEventListener('click', toggleSkills);
+        closeSkillsBtn.addEventListener('click', () => skillsPanel.classList.add('hidden'));
+
+        document.getElementById('up-fireball').addEventListener('click', () => {
+            if (this.player.addSkillPoint('fireball')) {
+                sfx.playPotion();
+                this.updateUI();
+            }
+        });
 
         const startBtn = document.getElementById('start-game-btn');
         const guidePanel = document.getElementById('guide-panel');
@@ -1293,6 +1332,8 @@ class Game {
                 document.getElementById('inventory-panel').classList.toggle('hidden');
             } else if (key === 'C') {
                 document.getElementById('stats-panel').classList.toggle('hidden');
+            } else if (key === 'S') {
+                document.getElementById('skills-panel').classList.toggle('hidden');
             }
         });
     }
@@ -1349,13 +1390,17 @@ class Game {
     }
 
     handleRightClick(sx, sy) {
-        if (this.player.mp < this.player.spellCost) {
+        const effectiveSlvl = this.player.skills.fireball + (this.player.fireballBonus || 0);
+        const damageMultiplier = 1.8 + (effectiveSlvl - 1) * 0.4;
+        const spellCost = 15 + (effectiveSlvl - 1) * 2.5;
+
+        if (this.player.mp < spellCost) {
             this.floaters.add(this.player.x, this.player.y - 15, "마나 부족!", "#55aaff");
             return;
         }
 
         const cartDest = this.screenToCartesian(sx, sy);
-        this.player.mp -= this.player.spellCost;
+        this.player.mp -= spellCost;
         
         const dx = cartDest.x - this.player.x;
         const dy = cartDest.y - this.player.y;
@@ -1370,7 +1415,8 @@ class Game {
             this.player.y,
             cartDest.x,
             cartDest.y,
-            Math.floor(this.player.atk * 1.8)
+            Math.floor(this.player.atk * damageMultiplier),
+            effectiveSlvl
         ));
 
         this.player.state = 'attack';
@@ -1569,7 +1615,11 @@ class Game {
 
             if (chosenSuffix) {
                 nameParts.push(chosenSuffix.name);
-                bonusVal += chosenSuffix.value;
+                if (chosenSuffix.statType === 'SKILL_FIREBALL') {
+                    item.skillFireballBonus = chosenSuffix.value;
+                } else {
+                    bonusVal += chosenSuffix.value;
+                }
             }
 
             item.name = nameParts.join(' ');
@@ -1581,7 +1631,9 @@ class Game {
             item.value = Math.floor(item.value * scaleMultiplier);
             
             // Rebuild stat string
-            if (itemTemplate.stat.includes('공격력')) {
+            if (item.skillFireballBonus) {
+                item.stat = `+${item.skillFireballBonus} 화염구 레벨`;
+            } else if (itemTemplate.stat.includes('공격력')) {
                 item.stat = `+${item.value} 공격력`;
             } else if (itemTemplate.stat.includes('MP')) {
                 item.stat = `+${item.value} 최대 MP`;
@@ -1647,6 +1699,24 @@ class Game {
         document.getElementById('up-atk').disabled = !hasPoints;
         document.getElementById('up-maxhp').disabled = !hasPoints;
         document.getElementById('up-maxmp').disabled = !hasPoints;
+
+        // Skills Panel UI
+        const effectiveSlvl = this.player.skills.fireball + (this.player.fireballBonus || 0);
+        const damageMultiplier = 1.8 + (effectiveSlvl - 1) * 0.4;
+        const spellCost = 15 + (effectiveSlvl - 1) * 2.5;
+
+        document.getElementById('skill-points').textContent = this.player.skillPoints.toString();
+        
+        let lvlText = `LV ${this.player.skills.fireball}`;
+        if (this.player.fireballBonus > 0) {
+            lvlText += ` (+${this.player.fireballBonus})`;
+        }
+        document.getElementById('skill-fireball-level').textContent = lvlText;
+        
+        document.getElementById('skill-fireball-desc').textContent = `공격력의 ${damageMultiplier.toFixed(1)}배 피해 (마나 ${spellCost.toFixed(0)} 소모)`;
+        
+        const hasSkillPoints = this.player.skillPoints > 0 && this.player.skills.fireball < 20;
+        document.getElementById('up-fireball').disabled = !hasSkillPoints;
 
         this.syncInventoryUI();
     }

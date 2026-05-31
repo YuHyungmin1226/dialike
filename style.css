@@ -651,3 +651,51 @@ canvas {
     font-weight: bold;
     color: var(--gothic-gold);
 }
+
+/* Skills Panel styling */
+#skills-panel {
+    top: 60px;
+    left: 310px;
+    width: 290px;
+}
+
+.skill-upgrade-group {
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid var(--border-bronze);
+    border-radius: 4px;
+    padding: 12px;
+    margin-bottom: 12px;
+}
+
+.skill-upgrade-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.skill-upgrade-name {
+    font-family: 'Cinzel', serif;
+    font-weight: bold;
+    font-size: 15px;
+}
+
+.skill-upgrade-level {
+    font-size: 13px;
+    color: var(--gothic-gold);
+    font-weight: 600;
+}
+
+.skill-upgrade-controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+}
+
+.skill-upgrade-desc {
+    font-size: 11px;
+    color: #b0a89f;
+    line-height: 1.3;
+    flex: 1;
+}
