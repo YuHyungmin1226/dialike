@@ -1000,13 +1000,33 @@ const SPAWN_INTERVAL = 180;
 const MAX_MONSTERS = 10;
 const ITEM_POOL = [
     { name: '철제 검', type: 'weapon', slot: 'weapon', stat: '+5 공격력', value: 5, rarity: 'normal', color: '#b0a89f' },
-    { name: '룬 단검', type: 'weapon', slot: 'weapon', stat: '+12 공격력', value: 12, rarity: 'rare', color: '#00ffcc' },
+    { name: '룬 단검', type: 'weapon', slot: 'weapon', stat: '+12 공격력', value: 12, rarity: 'normal', color: '#b0a89f' },
     { name: '디아블로의 낫', type: 'weapon', slot: 'weapon', stat: '+30 공격력', value: 30, rarity: 'unique', color: '#ff5500' },
     { name: '가죽 방패', type: 'armor', slot: 'shield', stat: '+10 최대 HP', value: 10, rarity: 'normal', color: '#b0a89f' },
-    { name: '성기사의 방패', type: 'armor', slot: 'shield', stat: '+40 최대 HP', value: 40, rarity: 'rare', color: '#00ffcc' },
+    { name: '성기사의 방패', type: 'armor', slot: 'shield', stat: '+40 최대 HP', value: 40, rarity: 'unique', color: '#ff5500' },
     { name: '강철 투구', type: 'armor', slot: 'helmet', stat: '+25 최대 HP', value: 25, rarity: 'normal', color: '#b0a89f' },
+    { name: '가죽 갑옷', type: 'armor', slot: 'chest', stat: '+15 최대 HP', value: 15, rarity: 'normal', color: '#b0a89f' },
     { name: '대천사의 로브', type: 'armor', slot: 'chest', stat: '+50 최대 MP', value: 50, rarity: 'unique', color: '#ff5500' },
     { name: '체력 물약', type: 'potion', slot: 'potion', stat: '클릭하여 물약 개수 +1', value: 1, rarity: 'normal', color: '#00ff00' }
+];
+
+const PREFIXES = [
+    { name: '날카로운', slot: 'weapon', value: 3 },
+    { name: '치명적인', slot: 'weapon', value: 6 },
+    { name: '단단한', slot: 'shield|helmet|chest', value: 4 },
+    { name: '두꺼운', slot: 'shield|helmet|chest', value: 8 },
+    { name: '빛나는', slot: 'weapon|shield|helmet|chest', value: 5 },
+    { name: '축복받은', slot: 'weapon|shield|helmet|chest', value: 10 },
+    { name: '신성한', slot: 'weapon|shield|helmet|chest', value: 15 }
+];
+
+const SUFFIXES = [
+    { name: '의 분노', slot: 'weapon', value: 4, statType: 'ATK' },
+    { name: '의 파괴자', slot: 'weapon', value: 10, statType: 'ATK' },
+    { name: '의 수호', slot: 'shield|helmet|chest', value: 5, statType: 'HP' },
+    { name: '의 생명', slot: 'shield|helmet|chest', value: 12, statType: 'HP' },
+    { name: '의 마나', slot: 'helmet|chest', value: 10, statType: 'MP' },
+    { name: '의 힘', slot: 'weapon|shield|helmet|chest', value: 6, statType: 'HP' }
 ];
 
 class Game {
@@ -1440,8 +1460,101 @@ class Game {
     }
 
     lootItem() {
-        const item = ITEM_POOL.at(Math.floor(Math.random() * ITEM_POOL.length));
+        // 1. Roll rarity
+        const roll = Math.random();
+        let rarity = 'normal';
+        let color = '#b0a89f';
         
+        if (roll < 0.70) {
+            rarity = 'normal';
+            color = '#b0a89f';
+        } else if (roll < 0.90) {
+            rarity = 'magic';
+            color = '#00ffcc';
+        } else if (roll < 0.98) {
+            rarity = 'rare';
+            color = '#ffff00';
+        } else {
+            rarity = 'unique';
+            color = '#ff5500';
+        }
+
+        // 2. Select base item or unique item template
+        let itemTemplate = null;
+        if (rarity === 'unique') {
+            const uniques = ITEM_POOL.filter(i => i.rarity === 'unique');
+            if (uniques.length > 0) {
+                itemTemplate = uniques.at(Math.floor(Math.random() * uniques.length));
+            }
+        } else {
+            const normals = ITEM_POOL.filter(i => i.rarity === 'normal');
+            if (normals.length > 0) {
+                itemTemplate = normals.at(Math.floor(Math.random() * normals.length));
+            }
+        }
+
+        if (!itemTemplate) {
+            // Fallback if filter failed
+            itemTemplate = ITEM_POOL.at(Math.floor(Math.random() * ITEM_POOL.length));
+        }
+
+        // Clone item template
+        let item = { ...itemTemplate, rarity, color, equipped: false };
+
+        // 3. Apply affixes if magic or rare and not a potion
+        if ((rarity === 'magic' || rarity === 'rare') && item.slot !== 'potion') {
+            const applicablePrefixes = PREFIXES.filter(p => p.slot.includes(item.slot));
+            const applicableSuffixes = SUFFIXES.filter(s => s.slot.includes(item.slot));
+
+            let chosenPrefix = null;
+            let chosenSuffix = null;
+
+            if (rarity === 'magic') {
+                const typeRoll = Math.random();
+                if (typeRoll < 0.4 && applicablePrefixes.length > 0) {
+                    chosenPrefix = applicablePrefixes.at(Math.floor(Math.random() * applicablePrefixes.length));
+                } else if (typeRoll < 0.8 && applicableSuffixes.length > 0) {
+                    chosenSuffix = applicableSuffixes.at(Math.floor(Math.random() * applicableSuffixes.length));
+                } else {
+                    if (applicablePrefixes.length > 0) chosenPrefix = applicablePrefixes.at(Math.floor(Math.random() * applicablePrefixes.length));
+                    if (applicableSuffixes.length > 0) chosenSuffix = applicableSuffixes.at(Math.floor(Math.random() * applicableSuffixes.length));
+                }
+            } else if (rarity === 'rare') {
+                if (applicablePrefixes.length > 0) chosenPrefix = applicablePrefixes.at(Math.floor(Math.random() * applicablePrefixes.length));
+                if (applicableSuffixes.length > 0) chosenSuffix = applicableSuffixes.at(Math.floor(Math.random() * applicableSuffixes.length));
+            }
+
+            let bonusVal = 0;
+            let nameParts = [];
+
+            if (chosenPrefix) {
+                nameParts.push(chosenPrefix.name);
+                bonusVal += chosenPrefix.value;
+            }
+
+            nameParts.push(item.name);
+
+            if (chosenSuffix) {
+                nameParts.push(chosenSuffix.name);
+                bonusVal += chosenSuffix.value;
+            }
+
+            item.name = nameParts.join(' ');
+            item.value += bonusVal;
+
+            // Rebuild stat string
+            if (item.slot === 'weapon') {
+                item.stat = `+${item.value} 공격력`;
+            } else {
+                if (chosenSuffix && chosenSuffix.statType === 'MP') {
+                    item.stat = `+${item.value} 최대 MP`;
+                } else {
+                    item.stat = `+${item.value} 최대 HP`;
+                }
+            }
+        }
+
+        // 4. Place in inventory
         let slotIdx = -1;
         for (let i = 0; i < this.inventory.length; i++) {
             if (this.inventory.at(i) === null) {
@@ -1451,9 +1564,8 @@ class Game {
         }
 
         if (slotIdx !== -1) {
-            const clonedItem = { ...item, equipped: false };
-            Reflect.set(this.inventory, slotIdx, clonedItem);
-            this.floaters.add(this.player.x, this.player.y - 25, `${clonedItem.name} 획득!`, clonedItem.color);
+            Reflect.set(this.inventory, slotIdx, item);
+            this.floaters.add(this.player.x, this.player.y - 25, `${item.name} 획득!`, item.color);
             
             this.syncInventoryUI();
             this.player.recalculateStats(this.inventory);
