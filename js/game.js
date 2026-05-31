@@ -489,11 +489,11 @@ class Player {
 
     addSkillPoint(skillKey) {
         if (this.skillPoints <= 0) return false;
-        const lvl = this.skills[skillKey];
-        if (lvl === undefined) return false;
+        if (skillKey !== 'fireball') return false;
+        const lvl = this.skills.fireball;
         if (lvl >= 20) return false;
         this.skillPoints--;
-        this.skills[skillKey] = lvl + 1;
+        this.skills.fireball = lvl + 1;
         return true;
     }
 
