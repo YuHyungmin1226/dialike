@@ -1196,8 +1196,11 @@ class Game {
 
                     descArea.appendChild(document.createTextNode(` (${item.rarity.toUpperCase()})`));
                     descArea.appendChild(document.createElement('br'));
-                    descArea.appendChild(document.createTextNode(item.stat));
-                    descArea.appendChild(document.createElement('br'));
+                    const lines = item.stat.split('\n');
+                    lines.forEach(line => {
+                        descArea.appendChild(document.createTextNode(line));
+                        descArea.appendChild(document.createElement('br'));
+                    });
 
                     if (item.slot !== 'potion') {
                         const reqLvl = item.reqLevel || 1;
@@ -1631,15 +1634,20 @@ class Game {
             item.value = Math.floor(item.value * scaleMultiplier);
             
             // Rebuild stat string
-            if (item.skillFireballBonus) {
-                item.stat = `+${item.skillFireballBonus} 화염구 레벨`;
-            } else if (itemTemplate.stat.includes('공격력')) {
-                item.stat = `+${item.value} 공격력`;
+            const statParts = [];
+            if (itemTemplate.stat.includes('공격력')) {
+                statParts.push(`+${item.value} 공격력`);
             } else if (itemTemplate.stat.includes('MP')) {
-                item.stat = `+${item.value} 최대 MP`;
+                statParts.push(`+${item.value} 최대 MP`);
             } else {
-                item.stat = `+${item.value} 최대 HP`;
+                statParts.push(`+${item.value} 최대 HP`);
             }
+
+            if (item.skillFireballBonus) {
+                statParts.push(`+${item.skillFireballBonus} 화염구 레벨`);
+            }
+            
+            item.stat = statParts.join('\n');
         }
 
         // 4. Place in inventory
