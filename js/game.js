@@ -398,6 +398,9 @@ class Player {
         this.attackTimer = 0;
         this.attackRange = 45;
         this.spellCost = 15;
+        this.critChance = 0.05;
+        this.critMultiplier = 1.75;
+        this.resists = { fire: 0, physical: 0 };
     }
 
     moveTo(tx, ty) {
@@ -471,6 +474,9 @@ class Player {
             }
             if (item.type === 'weapon') {
                 bonusAtk += item.value;
+                if (item.speed) {
+                    this.attackDuration = Math.round(20 * item.speed);
+                }
             } else if (item.type === 'armor') {
                 if (item.stat.includes('HP')) {
                     bonusHp += item.value;
@@ -730,6 +736,7 @@ class Monster {
                 this.isLoaded = false;
             }
         };
+        this.resists = { fire: 0, physical: 0 };
     }
 
     update(player, map) {
@@ -770,9 +777,14 @@ class Monster {
 
     takeDamage(amount, floaters) {
         if (this.state === 'death') return 0;
-        
-        this.hp -= amount;
-        floaters.add(this.x, this.y - 12, amount.toString(), '#ffcc00');
+
+        let dmg = amount;
+        const type = arguments.length >= 3 ? arguments[2] : 'physical';
+        const resist = this.resists && this.resists[type] ? this.resists[type] : 0;
+        const final = Math.max(1, Math.floor(dmg * (1 - resist)));
+
+        this.hp -= final;
+        floaters.add(this.x, this.y - 12, final.toString(), '#ffcc00');
 
         if (this.hp <= 0) {
             this.state = 'death';
@@ -899,7 +911,7 @@ class Monster {
 // 6. FIREBALL PROJECTILE ENGINE
 // ==========================================
 class Projectile {
-    constructor(x, y, tx, ty, damage = 25, level = 1) {
+    constructor(x, y, tx, ty, damage = 25, level = 1, type = 'physical') {
         this.x = x;
         this.y = y;
         this.radius = 8 + (level - 1) * 0.5;
@@ -914,6 +926,8 @@ class Projectile {
         this.vx = (dx / dist) * speed;
         this.vy = (dy / dist) * speed;
         this.angle = Math.atan2(dy, dx);
+        this.type = 'physical';
+        this.type = type;
     }
 
     update(map) {
@@ -1176,9 +1190,9 @@ class FloaterManager {
 const SPAWN_INTERVAL = 180;
 const MAX_MONSTERS = 10;
 const ITEM_POOL = [
-    { name: '철제 검', type: 'weapon', slot: 'weapon', stat: '+5 공격력', value: 5, rarity: 'normal', color: '#b0a89f', reqLevel: 1 },
-    { name: '룬 단검', type: 'weapon', slot: 'weapon', stat: '+12 공격력', value: 12, rarity: 'normal', color: '#b0a89f', reqLevel: 1 },
-    { name: '디아블로의 낫', type: 'weapon', slot: 'weapon', stat: '+30 공격력', value: 30, rarity: 'unique', color: '#ff5500', reqLevel: 15 },
+    { name: '철제 검', type: 'weapon', slot: 'weapon', stat: '+5 공격력', value: 5, speed: 1.0, rarity: 'normal', color: '#b0a89f', reqLevel: 1 },
+    { name: '룬 단검', type: 'weapon', slot: 'weapon', stat: '+12 공격력', value: 12, speed: 0.8, rarity: 'normal', color: '#b0a89f', reqLevel: 1 },
+    { name: '디아블로의 낫', type: 'weapon', slot: 'weapon', stat: '+30 공격력', value: 30, speed: 1.2, rarity: 'unique', color: '#ff5500', reqLevel: 15 },
     { name: '가죽 방패', type: 'armor', slot: 'shield', stat: '+10 최대 HP', value: 10, rarity: 'normal', color: '#b0a89f', reqLevel: 1 },
     { name: '성기사의 방패', type: 'armor', slot: 'shield', stat: '+40 최대 HP', value: 40, rarity: 'unique', color: '#ff5500', reqLevel: 12 },
     { name: '강철 투구', type: 'armor', slot: 'helmet', stat: '+25 최대 HP', value: 25, rarity: 'normal', color: '#b0a89f', reqLevel: 1 },
@@ -1633,7 +1647,17 @@ class Game {
             if (dist <= this.player.attackRange) {
                 if (this.player.meleeAttack()) {
                     sfx.playSlash();
-                    const expGained = clickedMonster.takeDamage(this.player.atk, this.floaters);
+
+                    // crit calculation
+                    const baseDamage = this.player.atk;
+                    const isCrit = Math.random() < (this.player.critChance || 0);
+                    let damage = baseDamage;
+                    if (isCrit) {
+                        damage = Math.floor(damage * (this.player.critMultiplier || 1));
+                        this.floaters.add(clickedMonster.x, clickedMonster.y - 10, 'CRIT!', '#ffdd55');
+                    }
+
+                    const expGained = clickedMonster.takeDamage(damage, this.floaters, 'physical');
                     if (expGained > 0) {
                         this.handleMonsterKill(clickedMonster);
                     }
@@ -1672,13 +1696,16 @@ class Game {
 
         sfx.playFireball();
 
+        // projectile carries damage type 'fire'
+        const fireDamage = Math.floor(this.player.atk * damageMultiplier);
         this.projectiles.push(new Projectile(
             this.player.x,
             this.player.y,
             cartDest.x,
             cartDest.y,
-            Math.floor(this.player.atk * damageMultiplier),
-            effectiveSlvl
+            fireDamage,
+            effectiveSlvl,
+            'fire'
         ));
 
         this.player.state = 'attack';
@@ -2112,7 +2139,7 @@ class Game {
                 for (const m of this.monsters) {
                     if (m.state === 'death') continue;
                     if (Math.hypot(p.x - m.x, p.y - m.y) < p.radius + m.radius) {
-                        const expGained = m.takeDamage(p.damage, this.floaters);
+                        const expGained = m.takeDamage(p.damage, this.floaters, p.type);
                         if (expGained > 0) {
                             this.handleMonsterKill(m);
                         }
