@@ -3,7 +3,9 @@
  * Combines Camera, Map, Player, Monsters, Audio Synth, and Loop Engine.
  */
 
-// Preprocessor for transparent PNG keying on black background (CORS safe check)
+// Preprocessor for transparent PNG keying (CORS safe check).
+// Sheets in /assets use solid black or solid white backgrounds, so both
+// extremes are keyed out.
 function makeTransparent(img, threshold = 25) {
     const canvas = document.createElement('canvas');
     canvas.width = img.width;
@@ -18,9 +20,10 @@ function makeTransparent(img, threshold = 25) {
         const r = data.at(i);
         const g = data.at(i + 1);
         const b = data.at(i + 2);
-        
-        // keying black pixels
-        if (r < threshold && g < threshold && b < threshold) {
+
+        const isBlackBg = r < threshold && g < threshold && b < threshold;
+        const isWhiteBg = r > 240 && g > 240 && b > 240;
+        if (isBlackBg || isWhiteBg) {
             Reflect.set(data, i + 3, 0); // alpha = 0
         }
     }
@@ -169,6 +172,36 @@ class SoundEngine {
             finalOsc.stop(this.ctx.currentTime + 0.85);
         }, 360);
     }
+
+    playBossSpawn() {
+        this.init();
+        if (!this.ctx) return;
+        const now = this.ctx.currentTime;
+
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(70, now);
+        osc.frequency.linearRampToValueAtTime(25, now + 1.2);
+        gain.gain.setValueAtTime(0.4, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 1.4);
+        osc.connect(gain);
+        gain.connect(this.masterVolume);
+        osc.start();
+        osc.stop(now + 1.5);
+
+        const osc2 = this.ctx.createOscillator();
+        const gain2 = this.ctx.createGain();
+        osc2.type = 'square';
+        osc2.frequency.setValueAtTime(110, now + 0.1);
+        osc2.frequency.linearRampToValueAtTime(55, now + 1.0);
+        gain2.gain.setValueAtTime(0.12, now + 0.1);
+        gain2.gain.exponentialRampToValueAtTime(0.001, now + 1.2);
+        osc2.connect(gain2);
+        gain2.connect(this.masterVolume);
+        osc2.start(now + 0.1);
+        osc2.stop(now + 1.3);
+    }
 }
 const sfx = new SoundEngine();
 
@@ -204,32 +237,219 @@ class TileMap {
         this.type = type;
         this.cols = type === 'town' ? 16 : 30;
         this.rows = type === 'town' ? 16 : 30;
-        
-        this.tileImage = new Image();
-        this.tileImage.src = type === 'town' ? 'assets/tile_grass.png' : 'assets/tile_stone.png';
+
+        // Dungeon floors use the stone sprite as a base; town floors are
+        // fully procedural (no grass asset exists in /assets).
+        this.tileImage = null;
         this.isImageLoaded = false;
-        this.tileImage.onload = () => {
-            this.isImageLoaded = true;
-        };
+        this.tileVariants = this.buildTileVariants(null);
+        if (type === 'dungeon') {
+            this.tileImage = new Image();
+            this.tileImage.src = 'assets/tile_stone.png';
+            this.tileImage.onload = () => {
+                this.isImageLoaded = true;
+                this.tileVariants = this.buildTileVariants(this.tileImage);
+            };
+        }
 
         this.grid = [];
+        this.variantGrid = [];
         this.generateMap();
+    }
+
+    // Deterministic per-cell hash so tile decoration stays stable every frame
+    static cellHash(r, c) {
+        let h = (r * 73856093) ^ (c * 19349663);
+        h = (h ^ (h >> 13)) * 1274126177;
+        return Math.abs(h ^ (h >> 16));
+    }
+
+    buildTileVariants(baseImage) {
+        const w = this.tileSize * 2;
+        const h = this.tileSize;
+        const isTown = this.type === 'town';
+        const baseTones = isTown
+            ? ['#1d3a1d', '#1a331a', '#214221', '#183018']
+            : ['#262019', '#221c16', '#2a231b', '#1f1a14'];
+        const variants = [];
+
+        for (let v = 0; v < 8; v++) {
+            const canvas = document.createElement('canvas');
+            canvas.width = w;
+            canvas.height = h;
+            const tctx = canvas.getContext('2d');
+
+            let seed = v * 7919 + (isTown ? 131 : 17);
+            const rnd = () => {
+                seed = (seed * 9301 + 49297) % 233280;
+                return seed / 233280;
+            };
+
+            tctx.beginPath();
+            tctx.moveTo(w / 2, 0);
+            tctx.lineTo(w, h / 2);
+            tctx.lineTo(w / 2, h);
+            tctx.lineTo(0, h / 2);
+            tctx.closePath();
+            tctx.clip();
+
+            if (baseImage) {
+                tctx.drawImage(baseImage, 0, 0, w, h);
+                tctx.fillStyle = `rgba(15, 10, 5, ${(v % 4) * 0.07})`;
+                tctx.fillRect(0, 0, w, h);
+            } else {
+                tctx.fillStyle = baseTones.at(v % baseTones.length);
+                tctx.fillRect(0, 0, w, h);
+                for (let i = 0; i < 5; i++) {
+                    tctx.fillStyle = `rgba(${isTown ? '60, 110, 50' : '70, 58, 44'}, ${0.05 + rnd() * 0.08})`;
+                    tctx.beginPath();
+                    tctx.ellipse(rnd() * w, rnd() * h, 8 + rnd() * 16, 4 + rnd() * 8, 0, 0, Math.PI * 2);
+                    tctx.fill();
+                }
+            }
+
+            // Speckle noise
+            for (let i = 0; i < 24; i++) {
+                tctx.fillStyle = isTown
+                    ? `rgba(${50 + Math.floor(rnd() * 50)}, ${100 + Math.floor(rnd() * 70)}, ${40 + Math.floor(rnd() * 40)}, 0.25)`
+                    : `rgba(${60 + Math.floor(rnd() * 50)}, ${50 + Math.floor(rnd() * 40)}, ${40 + Math.floor(rnd() * 30)}, 0.2)`;
+                tctx.fillRect(rnd() * w, rnd() * h, 1.5 + rnd() * 2.5, 1 + rnd() * 1.5);
+            }
+
+            if (v === 4) {
+                if (isTown) {
+                    // worn dirt path patch
+                    tctx.fillStyle = 'rgba(92, 70, 40, 0.4)';
+                    tctx.beginPath();
+                    tctx.ellipse(w / 2 + (rnd() - 0.5) * 20, h / 2 + (rnd() - 0.5) * 8, 18 + rnd() * 8, 8 + rnd() * 4, 0, 0, Math.PI * 2);
+                    tctx.fill();
+                } else {
+                    // floor cracks
+                    tctx.strokeStyle = 'rgba(0, 0, 0, 0.5)';
+                    tctx.lineWidth = 1;
+                    tctx.beginPath();
+                    let cx = w * 0.35 + rnd() * w * 0.2;
+                    let cy = h * 0.25;
+                    tctx.moveTo(cx, cy);
+                    for (let i = 0; i < 4; i++) {
+                        cx += (rnd() - 0.35) * 20;
+                        cy += 4 + rnd() * 8;
+                        tctx.lineTo(cx, cy);
+                    }
+                    tctx.stroke();
+                }
+            } else if (v === 5) {
+                if (isTown) {
+                    // grass tufts
+                    tctx.strokeStyle = 'rgba(90, 160, 70, 0.8)';
+                    tctx.lineWidth = 1;
+                    for (let i = 0; i < 6; i++) {
+                        const gx = w * 0.25 + rnd() * w * 0.5;
+                        const gy = h * 0.3 + rnd() * h * 0.4;
+                        tctx.beginPath();
+                        tctx.moveTo(gx, gy);
+                        tctx.lineTo(gx + (rnd() - 0.5) * 4, gy - 4 - rnd() * 4);
+                        tctx.stroke();
+                    }
+                } else {
+                    // scattered pebbles
+                    tctx.fillStyle = 'rgba(110, 100, 90, 0.6)';
+                    for (let i = 0; i < 5; i++) {
+                        tctx.beginPath();
+                        tctx.ellipse(w * 0.25 + rnd() * w * 0.5, h * 0.3 + rnd() * h * 0.4, 1.5 + rnd() * 2, 1 + rnd() * 1.5, 0, 0, Math.PI * 2);
+                        tctx.fill();
+                    }
+                }
+            } else if (v === 6) {
+                if (isTown) {
+                    // wild flowers
+                    const flowerColors = ['#e8d44d', '#d977c0', '#f0f0f0'];
+                    for (let i = 0; i < 3; i++) {
+                        const fx = w * 0.3 + rnd() * w * 0.4;
+                        const fy = h * 0.3 + rnd() * h * 0.4;
+                        tctx.strokeStyle = 'rgba(70, 130, 60, 0.9)';
+                        tctx.beginPath();
+                        tctx.moveTo(fx, fy + 3);
+                        tctx.lineTo(fx, fy);
+                        tctx.stroke();
+                        tctx.fillStyle = flowerColors.at(Math.floor(rnd() * flowerColors.length));
+                        tctx.beginPath();
+                        tctx.arc(fx, fy, 1.8, 0, Math.PI * 2);
+                        tctx.fill();
+                    }
+                } else {
+                    // old bones
+                    tctx.fillStyle = 'rgba(190, 185, 170, 0.75)';
+                    const bx = w * 0.4 + rnd() * w * 0.2;
+                    const by = h * 0.4 + rnd() * h * 0.2;
+                    tctx.fillRect(bx, by, 9, 2);
+                    tctx.fillRect(bx + 7, by - 3, 2, 8);
+                    tctx.beginPath();
+                    tctx.arc(bx - 2, by + 1, 2.5, 0, Math.PI * 2);
+                    tctx.fill();
+                }
+            } else if (v === 7) {
+                if (isTown) {
+                    // clover patch
+                    tctx.fillStyle = 'rgba(60, 140, 60, 0.45)';
+                    for (let i = 0; i < 8; i++) {
+                        tctx.beginPath();
+                        tctx.arc(w * 0.3 + rnd() * w * 0.4, h * 0.3 + rnd() * h * 0.4, 1.5 + rnd(), 0, Math.PI * 2);
+                        tctx.fill();
+                    }
+                } else {
+                    // moss growth
+                    tctx.fillStyle = 'rgba(50, 90, 45, 0.35)';
+                    for (let i = 0; i < 4; i++) {
+                        tctx.beginPath();
+                        tctx.ellipse(w * 0.3 + rnd() * w * 0.4, h * 0.3 + rnd() * h * 0.4, 4 + rnd() * 6, 2 + rnd() * 3, 0, 0, Math.PI * 2);
+                        tctx.fill();
+                    }
+                }
+            }
+
+            // subtle edge shading for tile separation
+            tctx.strokeStyle = isTown ? 'rgba(10, 25, 10, 0.35)' : 'rgba(0, 0, 0, 0.3)';
+            tctx.lineWidth = 1;
+            tctx.beginPath();
+            tctx.moveTo(w / 2, 0.5);
+            tctx.lineTo(w - 0.5, h / 2);
+            tctx.lineTo(w / 2, h - 0.5);
+            tctx.lineTo(0.5, h / 2);
+            tctx.closePath();
+            tctx.stroke();
+
+            variants.push(canvas);
+        }
+        return variants;
     }
 
     generateMap() {
         for (let r = 0; r < this.rows; r++) {
             const rowData = [];
+            const variantRow = [];
             for (let c = 0; c < this.cols; c++) {
                 if (r === 0 || r === this.rows - 1 || c === 0 || c === this.cols - 1) {
                     rowData.push(1);
-                } 
+                }
                 else if (this.type === 'dungeon' && Math.random() < 0.05 && (r > 12 && r < 18 && c > 12 && c < 18) === false) {
                     rowData.push(1);
                 } else {
                     rowData.push(0);
                 }
+
+                // Mostly plain tone variants, occasionally a decorated tile
+                const hash = TileMap.cellHash(r, c);
+                let variant = hash % 4;
+                const decoRoll = hash % 23;
+                if (decoRoll === 7) variant = 4;
+                else if (decoRoll === 11) variant = 5;
+                else if (decoRoll === 15) variant = 6;
+                else if (decoRoll === 19) variant = 7;
+                variantRow.push(variant);
             }
             this.grid.push(rowData);
+            this.variantGrid.push(variantRow);
         }
     }
 
@@ -278,14 +498,16 @@ class TileMap {
                 }
 
                 if (tileType === 0) {
-                    if (this.isImageLoaded) {
+                    const variantIdx = this.variantGrid.at(r).at(c);
+                    const tileCanvas = this.tileVariants ? this.tileVariants.at(variantIdx) : null;
+                    if (tileCanvas) {
                         const imgWidth = this.tileSize * 2;
                         const imgHeight = this.tileSize;
                         ctx.drawImage(
-                            this.tileImage, 
-                            screenX - imgWidth / 2, 
-                            screenY - imgHeight / 2, 
-                            imgWidth, 
+                            tileCanvas,
+                            screenX - imgWidth / 2,
+                            screenY - imgHeight / 2,
+                            imgWidth,
                             imgHeight
                         );
                     } else {
@@ -304,8 +526,12 @@ class TileMap {
                 } else if (tileType === 1) {
                     const heightOffset = 40;
                     const w = this.tileSize;
-                    
-                    ctx.fillStyle = this.type === 'town' ? '#223b22' : '#2d241e';
+
+                    const wallShade = TileMap.cellHash(r, c) % 3;
+                    const topTones = this.type === 'town'
+                        ? ['#223b22', '#1f3a26', '#264226']
+                        : ['#2d241e', '#332a22', '#2a2520'];
+                    ctx.fillStyle = topTones.at(wallShade);
                     ctx.beginPath();
                     ctx.moveTo(screenX, screenY - w / 2 - heightOffset);
                     ctx.lineTo(screenX + w, screenY - heightOffset);
@@ -472,6 +698,13 @@ class Player {
             if (item.skillFireballBonus) {
                 skillFireballBonus += item.skillFireballBonus;
             }
+            if (item.gems) {
+                item.gems.forEach(gem => {
+                    bonusAtk += gem.effect.atk || 0;
+                    bonusHp += gem.effect.hp || 0;
+                    bonusMp += gem.effect.mp || 0;
+                });
+            }
             if (item.type === 'weapon') {
                 bonusAtk += item.value;
                 if (item.speed) {
@@ -568,36 +801,54 @@ class Player {
         const screenX = isoPos.x - isoCam.x + halfWidth;
         const screenY = isoPos.y - isoCam.y + halfHeight;
 
-        const dirRows = [6, 7, 0, 1, 2, 3, 4, 5]; 
-        const row = dirRows.at(this.direction);
-
         if (this.isLoaded && this.processedSheet) {
-            const frameCols = 8;
-            const frameRows = 8;
-            const frameW = this.spriteSheet.width / frameCols;
-            const frameH = this.spriteSheet.height / frameRows;
+            // hero.png is a labeled animation sheet (8 columns of 128px);
+            // source rects skip the baked-in label text above each band.
+            const frameW = this.spriteSheet.width / 8;
+            const anims = {
+                idle:   { sy: 28,  sh: 124, frames: 6 },
+                walk:   { sy: 336, sh: 112, frames: 8 },
+                attack: { sy: 480, sh: 116, frames: 8 }
+            };
+            const anim = anims[this.state] || anims.idle;
 
-            let col = 0;
+            let col;
             if (this.state === 'walk') {
-                col = Math.floor(this.animTimer) % frameCols;
+                col = Math.floor(this.animTimer) % anim.frames;
             } else if (this.state === 'attack') {
                 const t = 1 - (this.attackTimer / this.attackDuration);
-                col = Math.floor(t * frameCols) % frameCols;
+                col = Math.floor(t * anim.frames) % anim.frames;
+            } else {
+                col = Math.floor(Date.now() / 180) % anim.frames;
             }
 
-            const drawW = 64;
             const drawH = 64;
+            const drawW = Math.round(drawH * frameW / anim.sh);
+
+            ctx.save();
+            ctx.fillStyle = 'rgba(0,0,0,0.35)';
+            ctx.beginPath();
+            ctx.ellipse(screenX, screenY + 8, 14, 7, 0, 0, Math.PI * 2);
+            ctx.fill();
+
+            // sheet faces right; flip when moving toward screen-left
+            if (this.direction >= 2 && this.direction <= 4) {
+                ctx.translate(screenX, 0);
+                ctx.scale(-1, 1);
+                ctx.translate(-screenX, 0);
+            }
             ctx.drawImage(
                 this.processedSheet,
                 col * frameW,
-                row * frameH,
+                anim.sy,
                 frameW,
-                frameH,
+                anim.sh,
                 screenX - drawW / 2,
-                screenY - drawH / 2 - 16,
+                screenY + 16 - drawH,
                 drawW,
                 drawH
             );
+            ctx.restore();
         } else {
             ctx.shadowBlur = 10;
             ctx.shadowColor = 'rgba(212, 175, 55, 0.4)';
@@ -701,7 +952,7 @@ class Player {
 // 5. SKELETON MONSTER & COMBAT SYSTEM
 // ==========================================
 class Monster {
-    constructor(x, y, level = 1) {
+    constructor(x, y, level = 1, rank = 'normal') {
         this.x = x;
         this.y = y;
         this.radius = 14;
@@ -737,6 +988,46 @@ class Monster {
             }
         };
         this.resists = { fire: 0, physical: 0 };
+
+        this.rank = rank;
+        this.name = '';
+        this.scale = 1;
+        this.goldMult = 1;
+        this.auraColor = null;
+
+        if (rank === 'champion') {
+            const mods = [
+                { name: '신속의', speedMult: 1.6 },
+                { name: '강철 피부', resists: { physical: 0.5 } },
+                { name: '화염심장', resists: { fire: 0.6 } },
+                { name: '광폭한', atkMult: 1.4 }
+            ];
+            const mod = mods.at(Math.floor(Math.random() * mods.length));
+            this.name = `${mod.name} 챔피언`;
+            this.maxHp *= 3;
+            this.hp = this.maxHp;
+            this.atk = Math.floor(this.atk * 1.5 * (mod.atkMult || 1));
+            this.speed *= (mod.speedMult || 1.15);
+            this.expValue = Math.floor(this.expValue * 2.5);
+            this.goldMult = 3;
+            this.scale = 1.2;
+            this.auraColor = '#66aaff';
+            if (mod.resists) Object.assign(this.resists, mod.resists);
+        } else if (rank === 'boss') {
+            this.name = '도살자';
+            this.maxHp *= 10;
+            this.hp = this.maxHp;
+            this.atk *= 2;
+            this.speed = 1.1;
+            this.expValue *= 10;
+            this.goldMult = 10;
+            this.scale = 1.8;
+            this.radius = 24;
+            this.auraColor = '#ff2200';
+            this.resists.physical = 0.3;
+            this.resists.fire = 0.3;
+            this.attackInterval = 75;
+        }
     }
 
     update(player, map) {
@@ -751,7 +1042,8 @@ class Monster {
         const dy = player.y - this.y;
         const dist = Math.hypot(dx, dy);
 
-        if (dist < 250 && dist > 15) {
+        const aggroRange = this.rank === 'boss' ? 100000 : 250;
+        if (dist < aggroRange && dist > 15) {
             this.animTimer += this.animSpeed;
             
             const vx = (dx / dist) * this.speed;
@@ -768,7 +1060,7 @@ class Monster {
             if (!map.isSolid(this.x, newY)) this.y = newY;
         }
 
-        if (dist <= 24 && this.attackCooldown === 0) {
+        if (dist <= (this.rank === 'boss' ? 36 : 24) && this.attackCooldown === 0) {
             this.attackCooldown = this.attackInterval;
             return this.atk;
         }
@@ -819,40 +1111,69 @@ class Monster {
             ctx.globalAlpha = Math.max(0, this.deathTimer / 40);
         }
 
+        // Champions and bosses are drawn larger around their anchor point
+        if (this.scale !== 1) {
+            ctx.translate(screenX, screenY);
+            ctx.scale(this.scale, this.scale);
+            ctx.translate(-screenX, -screenY);
+        }
+
+        if (this.auraColor && this.state !== 'death') {
+            ctx.save();
+            ctx.globalAlpha = 0.3 + Math.sin(Date.now() * 0.006) * 0.1;
+            ctx.shadowBlur = 14;
+            ctx.shadowColor = this.auraColor;
+            ctx.fillStyle = this.auraColor;
+            ctx.beginPath();
+            ctx.ellipse(screenX, screenY + 4, 16, 8, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+        }
+
         ctx.fillStyle = 'rgba(0,0,0,0.3)';
         ctx.beginPath();
         ctx.ellipse(screenX, screenY + 4, 12, 6, 0, 0, Math.PI * 2);
         ctx.fill();
 
         if (this.isLoaded && this.processedSheet) {
-            const frameCols = 8;
-            const frameRows = 8;
-            const frameW = this.spriteSheet.width / frameCols;
-            const frameH = this.spriteSheet.height / frameRows;
+            // skeleton.png is a labeled animation sheet (8 columns of 128px);
+            // walk uses cols 0-3 of the Walk/Run band, death plays its own band.
+            const frameW = this.spriteSheet.width / 8;
+            const anims = {
+                walk:  { sy: 192, sh: 134, frames: 4 },
+                death: { sy: 762, sh: 94, frames: 8 }
+            };
+            const anim = this.state === 'death' ? anims.death : anims.walk;
 
-            const dirRows = [6, 7, 0, 1, 2, 3, 4, 5]; 
-            const row = dirRows.at(this.direction);
-            
-            let col = 0;
-            if (this.state === 'walk') {
-                col = Math.floor(this.animTimer) % frameCols;
-            } else if (this.state === 'death') {
-                col = 0;
+            let col;
+            if (this.state === 'death') {
+                const t = 1 - Math.max(0, this.deathTimer) / 40;
+                col = Math.min(anim.frames - 1, Math.floor(t * anim.frames));
+            } else {
+                col = Math.floor(this.animTimer) % anim.frames;
             }
 
             const drawW = 56;
-            const drawH = 56;
+            const drawH = Math.round(drawW * anim.sh / frameW);
+
+            ctx.save();
+            if (this.direction >= 2 && this.direction <= 4) {
+                ctx.translate(screenX, 0);
+                ctx.scale(-1, 1);
+                ctx.translate(-screenX, 0);
+            }
             ctx.drawImage(
                 this.processedSheet,
                 col * frameW,
-                row * frameH,
+                anim.sy,
                 frameW,
-                frameH,
+                anim.sh,
                 screenX - drawW / 2,
-                screenY - drawH / 2 - 12,
+                screenY + 16 - drawH,
                 drawW,
                 drawH
             );
+            ctx.restore();
         } else {
             ctx.fillStyle = '#b0a89f'; 
             ctx.strokeStyle = '#3a332a';
@@ -901,6 +1222,15 @@ class Monster {
             ctx.fillRect(screenX - barW / 2, screenY - 26, barW, barH);
             ctx.fillStyle = '#ff3333';
             ctx.fillRect(screenX - barW / 2, screenY - 26, barW * (this.hp / this.maxHp), barH);
+        }
+
+        if (this.name && this.state !== 'death') {
+            ctx.fillStyle = this.auraColor || '#ffffff';
+            ctx.font = 'bold 11px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.shadowColor = '#000000';
+            ctx.shadowBlur = 4;
+            ctx.fillText(this.name, screenX, screenY - 32);
         }
 
         ctx.restore();
@@ -1221,6 +1551,14 @@ const SUFFIXES = [
     { name: '의 마법사', slot: 'weapon|helmet|chest', value: 1, statType: 'SKILL_FIREBALL' }
 ];
 
+const GEM_TYPES = [
+    { name: '루비', color: '#ff4466', effect: { hp: 25 }, stat: '소켓 장착 시: +25 최대 HP' },
+    { name: '사파이어', color: '#3a8fff', effect: { mp: 20 }, stat: '소켓 장착 시: +20 최대 MP' },
+    { name: '에메랄드', color: '#2ecc71', effect: { atk: 5 }, stat: '소켓 장착 시: +5 공격력' }
+];
+
+const BOSS_KILL_INTERVAL = 50;
+
 class Game {
     constructor() {
         this.canvas = document.getElementById('gameCanvas');
@@ -1251,6 +1589,9 @@ class Game {
 
         this.inventory = new Array(16).fill(null);
         this.mouse = { x: 0, y: 0, isDown: false, button: -1 };
+        this.zoom = 1.6;
+        this.nextBossKills = BOSS_KILL_INTERVAL;
+        this.selectedGemIdx = null;
         
         this.setupUI();
         this.setupInputs();
@@ -1426,7 +1767,7 @@ class Game {
                         eqSpan.style.fontSize = '10px';
                         eqSpan.textContent = '[장착 중]';
                         headerGroup.appendChild(eqSpan);
-                    } else if (item.slot !== 'potion') {
+                    } else if (item.slot !== 'potion' && item.type !== 'gem') {
                         const eqSpan = document.createElement('span');
                         eqSpan.style.color = '#888';
                         eqSpan.style.fontSize = '10px';
@@ -1443,7 +1784,16 @@ class Game {
                         descArea.appendChild(document.createElement('br'));
                     });
 
-                    if (item.slot !== 'potion') {
+                    if (item.sockets) {
+                        const filled = item.gems ? item.gems.length : 0;
+                        const sockSpan = document.createElement('span');
+                        sockSpan.style.color = '#9ad0ff';
+                        sockSpan.textContent = `소켓: ${'◆'.repeat(filled)}${'◇'.repeat(item.sockets - filled)}`;
+                        descArea.appendChild(sockSpan);
+                        descArea.appendChild(document.createElement('br'));
+                    }
+
+                    if (item.slot !== 'potion' && item.type !== 'gem') {
                         const reqLvl = item.reqLevel || 1;
                         const reqSpan = document.createElement('span');
                         reqSpan.textContent = `요구 레벨: ${reqLvl}`;
@@ -1462,6 +1812,8 @@ class Game {
                     span.style.fontSize = '10px';
                     if (item.slot === 'potion') {
                         span.textContent = '(클릭: 벨트에 등록 | Shift+클릭: 파괴)';
+                    } else if (item.type === 'gem') {
+                        span.textContent = '(클릭: 보석 선택 → 소켓 장비 클릭으로 장착 | Shift+클릭: 파괴)';
                     } else {
                         span.textContent = item.equipped ? '(클릭: 장착 해제 | Shift+클릭: 파괴)' : '(클릭: 아이템 장착 | Shift+클릭: 파괴)';
                     }
@@ -1486,16 +1838,40 @@ class Game {
                     // Shift + Click: Destroy item
                     if (confirm(`'${item.name}'을(를) 파괴하시겠습니까?`)) {
                         Reflect.set(this.inventory, idx, null);
-                        sfx.playMonsterDeath(); 
+                        if (this.selectedGemIdx === idx) this.selectedGemIdx = null;
+                        sfx.playMonsterDeath();
                         this.floaters.add(this.player.x, this.player.y - 15, "파괴됨", "#ff5555");
                     }
                 } else {
                     // Regular Click
-                    if (item.slot === 'potion') {
+                    if (item.type === 'gem') {
+                        if (this.selectedGemIdx === idx) {
+                            this.selectedGemIdx = null;
+                            this.floaters.add(this.player.x, this.player.y - 15, "보석 선택 해제", "#aaaaaa");
+                        } else {
+                            this.selectedGemIdx = idx;
+                            this.floaters.add(this.player.x, this.player.y - 15, "소켓이 있는 장비를 클릭하세요", item.color);
+                        }
+                    } else if (item.slot === 'potion') {
                         this.player.potions.push(item.value);
                         Reflect.set(this.inventory, idx, null);
                         sfx.playPotion();
                         this.floaters.add(this.player.x, this.player.y - 15, `${item.name} 등록`, "#00ff00");
+                    } else if (this.selectedGemIdx !== null) {
+                        // Socket the selected gem into this equipment
+                        const gem = this.inventory.at(this.selectedGemIdx);
+                        if (gem && item.sockets && (item.gems ? item.gems.length : 0) < item.sockets) {
+                            if (!item.gems) item.gems = [];
+                            item.gems.push(gem);
+                            item.stat += `\n${gem.name}: ${gem.stat.replace('소켓 장착 시: ', '')}`;
+                            Reflect.set(this.inventory, this.selectedGemIdx, null);
+                            sfx.playPotion();
+                            this.floaters.add(this.player.x, this.player.y - 15, `${gem.name} 소켓 장착!`, gem.color);
+                        } else {
+                            sfx.playHit();
+                            this.floaters.add(this.player.x, this.player.y - 15, "빈 소켓이 없습니다!", "#ff5555");
+                        }
+                        this.selectedGemIdx = null;
                     } else {
                         // Weapon/Armor Equip Toggle
                         if (item.equipped) {
@@ -1531,6 +1907,12 @@ class Game {
 
     setupInputs() {
         this.canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+        this.canvas.addEventListener('wheel', e => {
+            e.preventDefault();
+            const dir = e.deltaY > 0 ? -0.15 : 0.15;
+            this.zoom = Math.min(2.4, Math.max(1.0, this.zoom + dir));
+        }, { passive: false });
 
         this.canvas.addEventListener('mousedown', e => {
             if (!this.isGameRunning) return;
@@ -1594,13 +1976,14 @@ class Game {
     }
 
     handleLeftClick(sx, sy) {
+        const v = this.screenToVirtual(sx, sy);
         if (this.currentMap === 'town') {
             const isoCam = this.camera.getIsoOffset();
             const npcIso = this.map.worldToIso(this.npc.x, this.npc.y);
             const npx = npcIso.x - isoCam.x + this.canvas.width / 2;
             const npy = npcIso.y - isoCam.y + this.canvas.height / 2;
 
-            if (Math.hypot(sx - npx, sy - npy) < 32) {
+            if (Math.hypot(v.x - npx, v.y - npy) < 32) {
                 const dx = this.npc.x - this.player.x;
                 const dy = this.npc.y - this.player.y;
                 const dist = Math.hypot(dx, dy);
@@ -1629,7 +2012,7 @@ class Game {
             const msx = mIso.x - isoCam.x + this.canvas.width / 2;
             const msy = mIso.y - isoCam.y + this.canvas.height / 2;
 
-            if (Math.hypot(sx - msx, sy - msy) < 32) {
+            if (Math.hypot(v.x - msx, v.y - msy) < 32 * (m.scale || 1)) {
                 clickedMonster = m;
                 break;
             }
@@ -1714,13 +2097,34 @@ class Game {
         this.updateUI();
     }
 
+    // Converts raw screen coords into the unzoomed (virtual) screen space
+    // that all world->screen math operates in.
+    screenToVirtual(sx, sy) {
+        const hw = this.canvas.width / 2;
+        const hh = this.canvas.height / 2;
+        return {
+            x: (sx - hw) / this.zoom + hw,
+            y: (sy - hh) / this.zoom + hh
+        };
+    }
+
     screenToCartesian(sx, sy) {
+        const v = this.screenToVirtual(sx, sy);
         const isoCam = this.camera.getIsoOffset();
         const halfWidth = this.canvas.width / 2;
         const halfHeight = this.canvas.height / 2;
-        const isoX = sx - halfWidth + isoCam.x;
-        const isoY = sy - halfHeight + isoCam.y;
+        const isoX = v.x - halfWidth + isoCam.x;
+        const isoY = v.y - halfHeight + isoCam.y;
         return this.map.isoToWorld(isoX, isoY);
+    }
+
+    applyZoom() {
+        const hw = this.canvas.width / 2;
+        const hh = this.canvas.height / 2;
+        this.ctx.save();
+        this.ctx.translate(hw, hh);
+        this.ctx.scale(this.zoom, this.zoom);
+        this.ctx.translate(-hw, -hh);
     }
 
     spawnInitialMonsters() {
@@ -1749,30 +2153,88 @@ class Game {
         }
 
         const mLvl = Math.max(1, this.player.level + Math.floor(Math.random() * 3) - 1);
-        this.monsters.push(new Monster(rx, ry, mLvl));
+        const rank = Math.random() < 0.10 ? 'champion' : 'normal';
+        this.monsters.push(new Monster(rx, ry, mLvl, rank));
+    }
+
+    spawnBoss() {
+        if (this.monsters.some(m => m.rank === 'boss' && m.state !== 'death')) return;
+
+        const cx = 15 * this.dungeonMap.tileSize + this.dungeonMap.tileSize / 2;
+        const cy = 15 * this.dungeonMap.tileSize + this.dungeonMap.tileSize / 2;
+        const boss = new Monster(cx, cy, this.player.level + 2, 'boss');
+        this.monsters.push(boss);
+
+        sfx.playBossSpawn();
+        this.floaters.add(this.player.x, this.player.y - 35, "⚠ 도살자가 깨어났습니다!", '#ff2200');
+        this.floaters.add(boss.x, boss.y - 30, "신선한 고기다!", '#ff2200');
     }
 
     handleMonsterKill(monster) {
         sfx.playMonsterDeath();
         this.player.kills++;
-        
-        // Award gold based on monster level
-        const goldDropped = Math.floor(monster.level * (5 + Math.random() * 5));
+
+        // Award gold based on monster level and rank
+        const goldDropped = Math.floor(monster.level * (5 + Math.random() * 5) * (monster.goldMult || 1));
         this.player.gold += goldDropped;
         this.floaters.add(monster.x, monster.y - 10, `+${goldDropped} G`, '#ffd700');
-        
+
         const isLeveledUp = this.player.gainExp(monster.expValue);
         if (isLeveledUp) {
             sfx.playLevelUp();
             this.triggerLevelUpBanner();
         }
-        
+
         this.player.recalculateStats(this.inventory);
         this.updateUI();
 
-        if (Math.random() < 0.35) {
+        if (monster.rank === 'boss') {
+            this.floaters.add(monster.x, monster.y - 25, "도살자 처치!", '#ff5500');
+            for (let i = 0; i < 3; i++) {
+                this.lootItem(monster.level, true);
+            }
+        } else if (monster.rank === 'champion') {
+            this.lootItem(monster.level);
+        } else if (Math.random() < 0.35) {
             this.lootItem(monster.level);
         }
+
+        const gemChance = monster.rank === 'normal' ? 0.08 : 0.25;
+        if (Math.random() < gemChance) {
+            this.lootGem();
+        }
+
+        if (this.player.kills >= this.nextBossKills) {
+            this.nextBossKills += BOSS_KILL_INTERVAL;
+            this.spawnBoss();
+        }
+    }
+
+    lootGem() {
+        const gemType = GEM_TYPES.at(Math.floor(Math.random() * GEM_TYPES.length));
+
+        const slotIdx = this.inventory.indexOf(null);
+        if (slotIdx === -1) {
+            this.floaters.add(this.player.x, this.player.y - 25, "인벤토리 가득 참!", "#ff5555");
+            return;
+        }
+
+        const gem = {
+            name: gemType.name,
+            type: 'gem',
+            slot: 'gem',
+            stat: gemType.stat,
+            value: 0,
+            rarity: 'magic',
+            color: gemType.color,
+            effect: { ...gemType.effect },
+            reqLevel: 1
+        };
+        Reflect.set(this.inventory, slotIdx, gem);
+        this.floaters.add(this.player.x, this.player.y - 25, `${gemType.name} 획득!`, gemType.color);
+
+        this.syncInventoryUI();
+        this.updateUI();
     }
 
     syncInventoryUI() {
@@ -1791,6 +2253,8 @@ class Game {
                     slot.innerHTML = `<div style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 24px;">🧥</div>`;
                 } else if (item.slot === 'potion') {
                     slot.innerHTML = `<div style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 24px;">🧪</div>`;
+                } else if (item.type === 'gem') {
+                    slot.innerHTML = `<div style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 24px; filter: drop-shadow(0 0 4px ${item.color});">💎</div>`;
                 }
 
                 if (item.equipped) {
@@ -1813,6 +2277,11 @@ class Game {
                     slot.style.borderColor = item.color;
                     slot.style.boxShadow = '';
                 }
+
+                if (this.selectedGemIdx === i) {
+                    slot.style.borderColor = '#ffffff';
+                    slot.style.boxShadow = `0 0 12px ${item.color}`;
+                }
             } else {
                 slot.classList.remove('occupied');
                 slot.style.borderColor = '';
@@ -1822,9 +2291,9 @@ class Game {
         });
     }
 
-    lootItem(mLvl = 1) {
-        // 1. Roll rarity
-        const roll = Math.random();
+    lootItem(mLvl = 1, boosted = false) {
+        // 1. Roll rarity (boosted rolls — boss drops — are always magic or better)
+        const roll = boosted ? 0.7 + Math.random() * 0.3 : Math.random();
         let rarity = 'normal';
         let color = '#b0a89f';
         
@@ -1939,6 +2408,13 @@ class Game {
             }
             
             item.stat = statParts.join('\n');
+        }
+
+        // Roll sockets for equipment (0-2)
+        if (item.slot !== 'potion') {
+            const socketRoll = Math.random();
+            item.sockets = socketRoll < 0.45 ? 0 : (socketRoll < 0.8 ? 1 : 2);
+            item.gems = [];
         }
 
         // 4. Place in inventory
@@ -2069,8 +2545,10 @@ class Game {
             this.ctx.fillStyle = '#080606';
             this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
             this.camera.update(this.player.x, this.player.y);
+            this.applyZoom();
             this.map.render(this.ctx, this.camera, this.canvas.width, this.canvas.height);
             this.player.render(this.ctx, this.camera, this.canvas.width, this.canvas.height);
+            this.ctx.restore();
             requestAnimationFrame(() => this.run());
             return;
         }
@@ -2184,6 +2662,7 @@ class Game {
         this.ctx.fillStyle = '#080606';
         this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
 
+        this.applyZoom();
         this.map.render(this.ctx, this.camera, this.canvas.width, this.canvas.height);
 
         const entities = [];
@@ -2213,6 +2692,7 @@ class Game {
         }
 
         this.floaters.render(this.ctx, this.camera, this.canvas.width, this.canvas.height);
+        this.ctx.restore();
 
         requestAnimationFrame(() => this.run());
     }
@@ -2221,5 +2701,6 @@ class Game {
 // Start game instance on load
 window.addEventListener('load', () => {
     const game = new Game();
+    window.game = game;
     game.run();
 });
