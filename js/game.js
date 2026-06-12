@@ -657,6 +657,7 @@ class Player {
     }
 
     recalculateStats(inventory) {
+        this.attackDuration = 20; // reset to base; equipped weapon speed re-applies below
         let bonusAtk = 0;
         let bonusHp = 0;
         let bonusMp = 0;
@@ -674,16 +675,24 @@ class Player {
                     bonusMp += gem.effect.mp || 0;
                 });
             }
+            if (item.affixBonus) {
+                if (item.affixBonus.type === 'ATK') bonusAtk += item.affixBonus.value;
+                else if (item.affixBonus.type === 'MP') bonusMp += item.affixBonus.value;
+                else bonusHp += item.affixBonus.value;
+            }
             if (item.type === 'weapon') {
                 bonusAtk += item.value;
                 if (item.speed) {
                     this.attackDuration = Math.round(20 * item.speed);
                 }
             } else if (item.type === 'armor') {
-                if (item.stat.includes('HP')) {
-                    bonusHp += item.value;
-                } else if (item.stat.includes('MP')) {
+                // primaryStat is set on looted gear; fall back to the stat
+                // string for plain templates (e.g. starting items)
+                const primary = item.primaryStat || (item.stat.includes('MP') ? 'MP' : 'HP');
+                if (primary === 'MP') {
                     bonusMp += item.value;
+                } else {
+                    bonusHp += item.value;
                 }
             }
         });
@@ -1051,13 +1060,11 @@ class Monster {
         return 0;
     }
 
-    takeDamage(amount, floaters) {
+    takeDamage(amount, floaters, type = 'physical') {
         if (this.state === 'death') return 0;
 
-        let dmg = amount;
-        const type = arguments.length >= 3 ? arguments[2] : 'physical';
-        const resist = this.resists && this.resists[type] ? this.resists[type] : 0;
-        const final = Math.max(1, Math.floor(dmg * (1 - resist)));
+        const resist = this.resists[type] || 0;
+        const final = Math.max(1, Math.floor(amount * (1 - resist)));
 
         this.hp -= final;
         floaters.add(this.x, this.y - 12, final.toString(), '#ffcc00');
@@ -1235,12 +1242,11 @@ class Projectile {
 
         const dx = tx - x;
         const dy = ty - y;
-        const dist = Math.hypot(dx, dy);
+        const dist = Math.hypot(dx, dy) || 1; // avoid NaN velocity when target equals origin
         const speed = 7;
         this.vx = (dx / dist) * speed;
         this.vy = (dy / dist) * speed;
         this.angle = Math.atan2(dy, dx);
-        this.type = 'physical';
         this.type = type;
     }
 
@@ -1676,7 +1682,7 @@ class Game {
                     reqLevel: 1
                 };
 
-                Reflect.set(this.inventory, emptySlotIdx, potionItem);
+                this.inventory[emptySlotIdx] = potionItem;
                 sfx.playPotion();
                 this.floaters.add(this.player.x, this.player.y - 15, `물약 구매! (-${itemConfig.price} G)`, "#ffd700");
 
@@ -1836,7 +1842,7 @@ class Game {
                 if (e.shiftKey) {
                     // Shift + Click: Destroy item
                     if (confirm(`'${item.name}'을(를) 파괴하시겠습니까?`)) {
-                        Reflect.set(this.inventory, idx, null);
+                        this.inventory[idx] = null;
                         if (this.selectedGemIdx === idx) this.selectedGemIdx = null;
                         sfx.playMonsterDeath();
                         this.floaters.add(this.player.x, this.player.y - 15, "파괴됨", "#ff5555");
@@ -1853,7 +1859,7 @@ class Game {
                         }
                     } else if (item.slot === 'potion') {
                         this.player.potions.push(item.value);
-                        Reflect.set(this.inventory, idx, null);
+                        this.inventory[idx] = null;
                         sfx.playPotion();
                         this.floaters.add(this.player.x, this.player.y - 15, `${item.name} 등록`, "#00ff00");
                     } else if (this.selectedGemIdx !== null) {
@@ -1863,7 +1869,7 @@ class Game {
                             if (!item.gems) item.gems = [];
                             item.gems.push(gem);
                             item.stat += `\n${gem.name}: ${gem.stat.replace('소켓 장착 시: ', '')}`;
-                            Reflect.set(this.inventory, this.selectedGemIdx, null);
+                            this.inventory[this.selectedGemIdx] = null;
                             sfx.playPotion();
                             this.floaters.add(this.player.x, this.player.y - 15, `${gem.name} 소켓 장착!`, gem.color);
                         } else {
@@ -2244,7 +2250,7 @@ class Game {
     }
 
     spawnBoss() {
-        if (this.monsters.some(m => m.rank === 'boss' && m.state !== 'death')) return;
+        if (this.monsters.some(m => m.rank === 'boss' && m.state !== 'death')) return false;
 
         const cx = 15 * this.dungeonMap.tileSize + this.dungeonMap.tileSize / 2;
         const cy = 15 * this.dungeonMap.tileSize + this.dungeonMap.tileSize / 2;
@@ -2254,6 +2260,7 @@ class Game {
         sfx.playBossSpawn();
         this.floaters.add(this.player.x, this.player.y - 35, "⚠ 도살자가 깨어났습니다!", '#ff2200');
         this.floaters.add(boss.x, boss.y - 30, "신선한 고기다!", '#ff2200');
+        return true;
     }
 
     handleMonsterKill(monster) {
@@ -2290,9 +2297,10 @@ class Game {
             this.lootGem();
         }
 
-        if (this.player.kills >= this.nextBossKills) {
+        // Only advance the milestone once a boss actually spawns, so the
+        // summon isn't lost when a previous boss is still alive
+        if (this.player.kills >= this.nextBossKills && this.spawnBoss()) {
             this.nextBossKills += BOSS_KILL_INTERVAL;
-            this.spawnBoss();
         }
     }
 
@@ -2316,7 +2324,7 @@ class Game {
             effect: { ...gemType.effect },
             reqLevel: 1
         };
-        Reflect.set(this.inventory, slotIdx, gem);
+        this.inventory[slotIdx] = gem;
         this.floaters.add(this.player.x, this.player.y - 25, `${gemType.name} 획득!`, gemType.color);
 
         this.syncInventoryUI();
@@ -2467,7 +2475,9 @@ class Game {
                 if (chosenSuffix.statType === 'SKILL_FIREBALL') {
                     item.skillFireballBonus = chosenSuffix.value;
                 } else {
-                    bonusVal += chosenSuffix.value;
+                    // Suffix stats keep their own type (ATK/HP/MP) instead of
+                    // being lumped into the item's primary stat value.
+                    item.affixBonus = { type: chosenSuffix.statType, value: chosenSuffix.value };
                 }
             }
 
@@ -2478,21 +2488,30 @@ class Game {
         // Scale values for weapons/armors
         if (item.slot !== 'potion') {
             item.value = Math.floor(item.value * scaleMultiplier);
-            
+
             // Rebuild stat string
             const statParts = [];
             if (itemTemplate.stat.includes('공격력')) {
+                item.primaryStat = 'ATK';
                 statParts.push(`+${item.value} 공격력`);
             } else if (itemTemplate.stat.includes('MP')) {
+                item.primaryStat = 'MP';
                 statParts.push(`+${item.value} 최대 MP`);
             } else {
+                item.primaryStat = 'HP';
                 statParts.push(`+${item.value} 최대 HP`);
+            }
+
+            if (item.affixBonus) {
+                item.affixBonus.value = Math.floor(item.affixBonus.value * scaleMultiplier);
+                const affixLabels = { ATK: '공격력', HP: '최대 HP', MP: '최대 MP' };
+                statParts.push(`+${item.affixBonus.value} ${affixLabels[item.affixBonus.type]}`);
             }
 
             if (item.skillFireballBonus) {
                 statParts.push(`+${item.skillFireballBonus} 화염구 레벨`);
             }
-            
+
             item.stat = statParts.join('\n');
         }
 
@@ -2513,7 +2532,7 @@ class Game {
         }
 
         if (slotIdx !== -1) {
-            Reflect.set(this.inventory, slotIdx, item);
+            this.inventory[slotIdx] = item;
             this.floaters.add(this.player.x, this.player.y - 25, `${item.name} 획득!`, item.color);
             
             this.syncInventoryUI();
