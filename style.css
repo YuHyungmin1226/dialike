@@ -616,6 +616,12 @@ canvas {
     border-radius: 1px;
 }
 
+.portal-icon {
+    background: radial-gradient(circle, #ffffff 0%, #00ffff 35%, #0066cc 100%);
+    border: 1px solid #00aaff;
+    box-shadow: 0 0 6px #00ccff;
+}
+
 .potion-count {
     position: absolute;
     top: 2px;

@@ -28,12 +28,11 @@
                 <h2>DIALIKE</h2>
                 <p>다크 판타지 월드에 오신 것을 환영합니다.</p>
                 <ul>
-                    <li><span class="key">좌클릭</span>: 이동 및 근접 공격</li>
-                    <li><span class="key">우클릭</span>: 파이어볼 투사체 발사</li>
-                    <li><span class="key">I</span>: 인벤토리 창 토글</li>
-                    <li><span class="key">C</span>: 캐릭터 정보 창 토글</li>
-                    <li><span class="key">S</span>: 스킬 / <span class="key">Q</span>: 물약 / <span class="key">T</span>: 차원문</li>
-                    <li><span class="key">휠</span>: 카메라 확대 / 축소</li>
+                    <li><span class="key">W A S D</span>: 이동</li>
+                    <li><span class="key">&lt;</span>: 기본 공격 (가까운 적) / <span class="key">&gt;</span>: 파이어볼</li>
+                    <li><span class="key">I</span>: 인벤토리 / <span class="key">C</span>: 캐릭터 정보 / <span class="key">K</span>: 스킬</li>
+                    <li><span class="key">Q</span>: 물약 / <span class="key">T</span>: 차원문 / <span class="key">휠</span>: 확대·축소</li>
+                    <li><span class="key">마우스</span>: 클릭 이동·공격, NPC 대화도 가능</li>
                 </ul>
                 <button id="start-game-btn" class="gothic-btn">게임 시작</button>
             </div>
@@ -203,18 +202,18 @@
                         <div class="action-btn-group">
                             <button id="toggle-stats-btn" title="캐릭터 정보 (C)">C</button>
                             <button id="toggle-inv-btn" title="인벤토리 (I)">I</button>
-                            <button id="toggle-skills-btn" title="스킬 정보 (S)">S</button>
+                            <button id="toggle-skills-btn" title="스킬 정보 (K)">K</button>
                         </div>
 
                         <!-- Skill / Potion slots -->
                         <div class="slots-container">
-                            <div class="skill-slot active" id="slot-lclick">
-                                <span class="slot-key">L-Click</span>
+                            <div class="skill-slot active" id="slot-lclick" title="기본 공격 (&lt; 키 또는 좌클릭)">
+                                <span class="slot-key">&lt;</span>
                                 <div class="slot-icon atk-icon"></div>
                                 <span class="slot-name">베기</span>
                             </div>
-                            <div class="skill-slot" id="slot-rclick">
-                                <span class="slot-key">R-Click</span>
+                            <div class="skill-slot" id="slot-rclick" title="파이어볼 (&gt; 키 또는 우클릭)">
+                                <span class="slot-key">&gt;</span>
                                 <div class="slot-icon spell-icon"></div>
                                 <span class="slot-name">파이어볼</span>
                             </div>
@@ -223,6 +222,11 @@
                                 <div class="slot-icon potion-icon"></div>
                                 <span class="potion-count" id="potion-count">5</span>
                                 <span class="slot-name">체력물약</span>
+                            </div>
+                            <div class="skill-slot" id="slot-portal" title="차원문 열기 (T)">
+                                <span class="slot-key">T</span>
+                                <div class="slot-icon portal-icon"></div>
+                                <span class="slot-name">차원문</span>
                             </div>
                         </div>
 

@@ -3,34 +3,6 @@
  * Combines Camera, Map, Player, Monsters, Audio Synth, and Loop Engine.
  */
 
-// Preprocessor for transparent PNG keying (CORS safe check).
-// Sheets in /assets use solid black or solid white backgrounds, so both
-// extremes are keyed out.
-function makeTransparent(img, threshold = 25) {
-    const canvas = document.createElement('canvas');
-    canvas.width = img.width;
-    canvas.height = img.height;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(img, 0, 0);
-
-    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const data = imgData.data;
-
-    for (let i = 0; i < data.length; i += 4) {
-        const r = data.at(i);
-        const g = data.at(i + 1);
-        const b = data.at(i + 2);
-
-        const isBlackBg = r < threshold && g < threshold && b < threshold;
-        const isWhiteBg = r > 240 && g > 240 && b > 240;
-        if (isBlackBg || isWhiteBg) {
-            Reflect.set(data, i + 3, 0); // alpha = 0
-        }
-    }
-    ctx.putImageData(imgData, 0, 0);
-    return canvas;
-}
-
 // ==========================================
 // 1. SOUND SYNTHESIS ENGINE (Web Audio API)
 // ==========================================
@@ -606,18 +578,15 @@ class Player {
         
         this.animTimer = 0;
         this.animSpeed = 0.15;
+        // Sheets in /assets ship with pre-keyed transparent backgrounds,
+        // so they can be drawn directly (works on file:// as well).
         this.spriteSheet = new Image();
         this.spriteSheet.src = 'assets/hero.png';
         this.processedSheet = null;
         this.isLoaded = false;
         this.spriteSheet.onload = () => {
-            try {
-                this.processedSheet = makeTransparent(this.spriteSheet);
-                this.isLoaded = true;
-            } catch(e) {
-                // local file fallback (CORS restriction on file:///)
-                this.isLoaded = false;
-            }
+            this.processedSheet = this.spriteSheet;
+            this.isLoaded = true;
         };
 
         this.attackDuration = 20;
@@ -974,18 +943,14 @@ class Monster {
 
         this.animTimer = Math.random() * 10;
         this.animSpeed = 0.1;
+        // Pre-keyed transparent sheet; drawn directly (works on file://).
         this.spriteSheet = new Image();
         this.spriteSheet.src = 'assets/skeleton.png';
         this.processedSheet = null;
         this.isLoaded = false;
         this.spriteSheet.onload = () => {
-            try {
-                this.processedSheet = makeTransparent(this.spriteSheet);
-                this.isLoaded = true;
-            } catch(e) {
-                // local file fallback (CORS restriction on file:///)
-                this.isLoaded = false;
-            }
+            this.processedSheet = this.spriteSheet;
+            this.isLoaded = true;
         };
         this.resists = { fire: 0, physical: 0 };
 
@@ -1592,6 +1557,8 @@ class Game {
         this.zoom = 1.6;
         this.nextBossKills = BOSS_KILL_INTERVAL;
         this.selectedGemIdx = null;
+        this.keys = {};
+        this.movingByKeys = false;
         
         this.setupUI();
         this.setupInputs();
@@ -1739,6 +1706,19 @@ class Game {
 
         document.getElementById('slot-potion').addEventListener('click', () => {
             this.triggerPotion();
+        });
+
+        document.getElementById('slot-portal').addEventListener('click', () => {
+            sfx.init();
+            this.triggerTownPortal();
+        });
+
+        document.getElementById('slot-lclick').addEventListener('click', () => {
+            if (this.isGameRunning) this.triggerMeleeKey();
+        });
+
+        document.getElementById('slot-rclick').addEventListener('click', () => {
+            if (this.isGameRunning) this.triggerFireballKey();
         });
 
         const slots = document.querySelectorAll('.inv-slot');
@@ -1952,18 +1932,60 @@ class Game {
         window.addEventListener('keydown', e => {
             sfx.init();
             const key = e.key.toUpperCase();
-            if (key === 'Q') {
+            if (key === 'W' || key === 'A' || key === 'S' || key === 'D') {
+                if (this.isGameRunning) this.keys[key] = true;
+            } else if (key === ',' || key === '<') {
+                if (this.isGameRunning) this.triggerMeleeKey();
+            } else if (key === '.' || key === '>') {
+                if (this.isGameRunning) this.triggerFireballKey();
+            } else if (key === 'Q') {
                 this.triggerPotion();
             } else if (key === 'I') {
                 document.getElementById('inventory-panel').classList.toggle('hidden');
             } else if (key === 'C') {
                 document.getElementById('stats-panel').classList.toggle('hidden');
-            } else if (key === 'S') {
+            } else if (key === 'K') {
                 document.getElementById('skills-panel').classList.toggle('hidden');
             } else if (key === 'T') {
                 this.triggerTownPortal();
             }
         });
+
+        window.addEventListener('keyup', e => {
+            const key = e.key.toUpperCase();
+            if (key === 'W' || key === 'A' || key === 'S' || key === 'D') {
+                this.keys[key] = false;
+            }
+        });
+
+        // Drop held movement keys when the window loses focus
+        window.addEventListener('blur', () => {
+            this.keys = {};
+        });
+    }
+
+    // Converts held WASD keys (screen directions) into isometric world
+    // movement each frame; releasing all keys stops the player.
+    processKeyboardMovement() {
+        let mx = 0;
+        let my = 0;
+        if (this.keys.W) my -= 1;
+        if (this.keys.S) my += 1;
+        if (this.keys.A) mx -= 1;
+        if (this.keys.D) mx += 1;
+
+        if (mx !== 0 || my !== 0) {
+            let wx = (mx + 2 * my) * 0.5;
+            let wy = (2 * my - mx) * 0.5;
+            const len = Math.hypot(wx, wy);
+            wx /= len;
+            wy /= len;
+            this.player.moveTo(this.player.x + wx * 50, this.player.y + wy * 50);
+            this.movingByKeys = true;
+        } else if (this.movingByKeys) {
+            this.player.moveTo(this.player.x, this.player.y);
+            this.movingByKeys = false;
+        }
     }
 
     triggerPotion() {
@@ -2019,33 +2041,9 @@ class Game {
         }
 
         if (clickedMonster) {
-            const dx = clickedMonster.x - this.player.x;
-            const dy = clickedMonster.y - this.player.y;
-            const dist = Math.hypot(dx, dy);
-
-            let angle = Math.atan2(dy, dx);
-            if (angle < 0) angle += Math.PI * 2;
-            this.player.direction = Math.round(angle / (Math.PI / 4)) % 8;
-
+            const dist = Math.hypot(clickedMonster.x - this.player.x, clickedMonster.y - this.player.y);
             if (dist <= this.player.attackRange) {
-                if (this.player.meleeAttack()) {
-                    sfx.playSlash();
-
-                    // crit calculation
-                    const baseDamage = this.player.atk;
-                    const isCrit = Math.random() < (this.player.critChance || 0);
-                    let damage = baseDamage;
-                    if (isCrit) {
-                        damage = Math.floor(damage * (this.player.critMultiplier || 1));
-                        this.floaters.add(clickedMonster.x, clickedMonster.y - 10, 'CRIT!', '#ffdd55');
-                    }
-
-                    const expGained = clickedMonster.takeDamage(damage, this.floaters, 'physical');
-                    if (expGained > 0) {
-                        this.handleMonsterKill(clickedMonster);
-                    }
-                    this.updateUI();
-                }
+                this.attackMonster(clickedMonster);
             } else {
                 this.player.moveTo(clickedMonster.x, clickedMonster.y);
             }
@@ -2054,7 +2052,39 @@ class Game {
         }
     }
 
+    attackMonster(monster) {
+        const dx = monster.x - this.player.x;
+        const dy = monster.y - this.player.y;
+        let angle = Math.atan2(dy, dx);
+        if (angle < 0) angle += Math.PI * 2;
+        this.player.direction = Math.round(angle / (Math.PI / 4)) % 8;
+
+        if (this.player.meleeAttack()) {
+            sfx.playSlash();
+
+            // crit calculation
+            const baseDamage = this.player.atk;
+            const isCrit = Math.random() < (this.player.critChance || 0);
+            let damage = baseDamage;
+            if (isCrit) {
+                damage = Math.floor(damage * (this.player.critMultiplier || 1));
+                this.floaters.add(monster.x, monster.y - 10, 'CRIT!', '#ffdd55');
+            }
+
+            const expGained = monster.takeDamage(damage, this.floaters, 'physical');
+            if (expGained > 0) {
+                this.handleMonsterKill(monster);
+            }
+            this.updateUI();
+        }
+    }
+
     handleRightClick(sx, sy) {
+        const cartDest = this.screenToCartesian(sx, sy);
+        this.castFireball(cartDest.x, cartDest.y);
+    }
+
+    castFireball(tx, ty) {
         if (this.currentMap === 'town') {
             this.floaters.add(this.player.x, this.player.y - 15, "마을은 안전지대입니다.", "#00ffff");
             return;
@@ -2068,11 +2098,10 @@ class Game {
             return;
         }
 
-        const cartDest = this.screenToCartesian(sx, sy);
         this.player.mp -= spellCost;
-        
-        const dx = cartDest.x - this.player.x;
-        const dy = cartDest.y - this.player.y;
+
+        const dx = tx - this.player.x;
+        const dy = ty - this.player.y;
         let angle = Math.atan2(dy, dx);
         if (angle < 0) angle += Math.PI * 2;
         this.player.direction = Math.round(angle / (Math.PI / 4)) % 8;
@@ -2084,8 +2113,8 @@ class Game {
         this.projectiles.push(new Projectile(
             this.player.x,
             this.player.y,
-            cartDest.x,
-            cartDest.y,
+            tx,
+            ty,
             fireDamage,
             effectiveSlvl,
             'fire'
@@ -2095,6 +2124,43 @@ class Game {
         this.player.attackTimer = 12;
 
         this.updateUI();
+    }
+
+    findNearestMonster(maxDist) {
+        if (this.currentMap !== 'dungeon') return null;
+        let nearest = null;
+        let nearestDist = maxDist;
+        for (const m of this.monsters) {
+            if (m.state === 'death') continue;
+            const d = Math.hypot(m.x - this.player.x, m.y - this.player.y);
+            if (d <= nearestDist) {
+                nearestDist = d;
+                nearest = m;
+            }
+        }
+        return nearest;
+    }
+
+    triggerMeleeKey() {
+        const target = this.findNearestMonster(this.player.attackRange);
+        if (target) {
+            this.attackMonster(target);
+        } else if (this.player.meleeAttack()) {
+            sfx.playSlash();
+        }
+    }
+
+    triggerFireballKey() {
+        const target = this.findNearestMonster(600);
+        if (target) {
+            this.castFireball(target.x, target.y);
+        } else {
+            const angle = this.player.direction * (Math.PI / 4);
+            this.castFireball(
+                this.player.x + Math.cos(angle) * 120,
+                this.player.y + Math.sin(angle) * 120
+            );
+        }
     }
 
     // Converts raw screen coords into the unzoomed (virtual) screen space
@@ -2554,6 +2620,7 @@ class Game {
         }
 
         // --- UPDATE STEP ---
+        this.processKeyboardMovement();
         this.player.update(this.map);
         this.camera.update(this.player.x, this.player.y);
 
