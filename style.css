@@ -162,7 +162,17 @@ canvas {
     font-size: 13px;
     margin-bottom: 8px;
     display: flex;
-    justify-content: space-between;
+    gap: 12px;
+}
+
+#guide-panel li .key {
+    flex: 0 0 88px;
+    text-align: right;
+}
+
+#guide-panel li span:last-child {
+    flex: 1;
+    text-align: left;
 }
 
 .key {
