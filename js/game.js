@@ -1124,8 +1124,8 @@ class Monster {
             // walk uses cols 0-3 of the Walk/Run band, death plays its own band.
             const frameW = this.spriteSheet.width / 8;
             const anims = {
-                walk:  { sy: 192, sh: 134, frames: 4 },
-                death: { sy: 762, sh: 94, frames: 8 }
+                walk:  { sy: 197, sh: 124, frames: 4 },
+                death: { sy: 766, sh: 104, frames: 8 }
             };
             const anim = this.state === 'death' ? anims.death : anims.walk;
 
