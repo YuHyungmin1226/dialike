@@ -23,6 +23,9 @@
             <!-- Level Up Announcement Banner -->
             <div id="level-up-banner" class="hidden">LEVEL UP!</div>
 
+            <!-- Minimap / Automap (M) -->
+            <canvas id="minimap" width="176" height="176"></canvas>
+
             <!-- Start / Help Guide -->
             <div id="guide-panel" class="glass-panel">
                 <h2>DIALIKE</h2>
@@ -31,6 +34,7 @@
                     <li><span class="key">W A S D</span><span>이동</span></li>
                     <li><span class="key">&lt; / &gt;</span><span>기본 공격 (가까운 적) / 파이어볼</span></li>
                     <li><span class="key">I / C / K</span><span>인벤토리 / 캐릭터 정보 / 스킬</span></li>
+                    <li><span class="key">M</span><span>미니맵 표시 · 숨기기</span></li>
                     <li><span class="key">Q / R / T</span><span>체력 물약 / 마나 물약 / 차원문</span></li>
                     <li><span class="key">마우스 휠</span><span>카메라 확대 · 축소</span></li>
                     <li><span class="key">마우스</span><span>클릭 이동 · 공격, NPC 대화</span></li>
@@ -48,6 +52,10 @@
                     <div class="stat-group">
                         <span class="stat-label">레벨:</span>
                         <span id="stat-level" class="stat-value">1</span>
+                    </div>
+                    <div class="stat-group">
+                        <span class="stat-label">현재 위치:</span>
+                        <span id="stat-floor" class="stat-value">지하 1층</span>
                     </div>
                     <div class="stat-group">
                         <span class="stat-label">공격력:</span>

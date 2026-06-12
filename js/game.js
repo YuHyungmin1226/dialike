@@ -204,11 +204,16 @@ class Camera {
 // 3. ISOMETRIC TILE MAP ENGINE
 // ==========================================
 class TileMap {
-    constructor(tileSize = 64, type = 'dungeon') {
+    constructor(tileSize = 64, type = 'dungeon', floor = 1) {
         this.tileSize = tileSize;
         this.type = type;
-        this.cols = type === 'town' ? 16 : 30;
-        this.rows = type === 'town' ? 16 : 30;
+        this.floor = floor;
+        this.cols = type === 'town' ? 16 : 40;
+        this.rows = type === 'town' ? 16 : 40;
+
+        // Deeper floors shift the palette: brown -> blue-grey -> infernal red
+        const tier = type === 'town' ? 0 : Math.min(2, Math.floor((floor - 1) / 3));
+        this.palette = TileMap.PALETTES[type === 'town' ? 'town' : `dungeon${tier}`];
 
         // Dungeon floors use the stone sprite as a base; town floors are
         // fully procedural (no grass asset exists in /assets).
@@ -226,7 +231,25 @@ class TileMap {
 
         this.grid = [];
         this.variantGrid = [];
+        this.rooms = [];          // dungeon rooms as {r, c, w, h}
+        this.houseSpots = [];     // town building footprints
+        this.spawnPoint = null;   // world coords
+        this.stairsPoint = null;
+        this.bossPoint = null;
         this.generateMap();
+
+        // Fog-of-war state for the minimap (town starts fully revealed)
+        this.explored = [];
+        for (let r = 0; r < this.rows; r++) {
+            this.explored.push(new Array(this.cols).fill(type === 'town'));
+        }
+    }
+
+    tileToWorld(c, r) {
+        return {
+            x: c * this.tileSize + this.tileSize / 2,
+            y: r * this.tileSize + this.tileSize / 2
+        };
     }
 
     // Deterministic per-cell hash so tile decoration stays stable every frame
@@ -240,9 +263,7 @@ class TileMap {
         const w = this.tileSize * 2;
         const h = this.tileSize;
         const isTown = this.type === 'town';
-        const baseTones = isTown
-            ? ['#1d3a1d', '#1a331a', '#214221', '#183018']
-            : ['#262019', '#221c16', '#2a231b', '#1f1a14'];
+        const baseTones = this.palette.base;
         const variants = [];
 
         for (let v = 0; v < 8; v++) {
@@ -380,6 +401,12 @@ class TileMap {
                 }
             }
 
+            // Depth-tier color wash unifies image, speckles and decorations
+            if (this.palette.tint) {
+                tctx.fillStyle = this.palette.tint;
+                tctx.fillRect(0, 0, w, h);
+            }
+
             // subtle edge shading for tile separation
             tctx.strokeStyle = isTown ? 'rgba(10, 25, 10, 0.35)' : 'rgba(0, 0, 0, 0.3)';
             tctx.lineWidth = 1;
@@ -397,19 +424,19 @@ class TileMap {
     }
 
     generateMap() {
+        if (this.type === 'town') {
+            this.generateTown();
+        } else {
+            this.generateDungeon();
+        }
+        this.buildVariantGrid();
+    }
+
+    buildVariantGrid() {
+        this.variantGrid = [];
         for (let r = 0; r < this.rows; r++) {
-            const rowData = [];
             const variantRow = [];
             for (let c = 0; c < this.cols; c++) {
-                if (r === 0 || r === this.rows - 1 || c === 0 || c === this.cols - 1) {
-                    rowData.push(1);
-                }
-                else if (this.type === 'dungeon' && Math.random() < 0.05 && (r > 12 && r < 18 && c > 12 && c < 18) === false) {
-                    rowData.push(1);
-                } else {
-                    rowData.push(0);
-                }
-
                 // Mostly plain tone variants, occasionally a decorated tile
                 const hash = TileMap.cellHash(r, c);
                 let variant = hash % 4;
@@ -420,8 +447,132 @@ class TileMap {
                 else if (decoRoll === 19) variant = 7;
                 variantRow.push(variant);
             }
-            this.grid.push(rowData);
             this.variantGrid.push(variantRow);
+        }
+    }
+
+    generateTown() {
+        this.grid = [];
+        for (let r = 0; r < this.rows; r++) {
+            const rowData = [];
+            for (let c = 0; c < this.cols; c++) {
+                rowData.push(r === 0 || r === this.rows - 1 || c === 0 || c === this.cols - 1 ? 1 : 0);
+            }
+            this.grid.push(rowData);
+        }
+
+        // Building footprints are solid so the player can't walk through them;
+        // the house prop is drawn on top of the resulting wall blocks
+        this.houseSpots = [
+            { r: 2, c: 3, w: 2, h: 2 },
+            { r: 2, c: 11, w: 2, h: 2 }
+        ];
+        this.houseSpots.forEach(spot => {
+            for (let r = spot.r; r < spot.r + spot.h; r++) {
+                for (let c = spot.c; c < spot.c + spot.w; c++) {
+                    this.grid[r][c] = 1;
+                }
+            }
+        });
+    }
+
+    // Classic rooms-and-corridors dungeon: place non-overlapping rooms,
+    // then link consecutive room centers with 2-tile-wide L corridors.
+    generateDungeon() {
+        this.grid = [];
+        for (let r = 0; r < this.rows; r++) {
+            this.grid.push(new Array(this.cols).fill(1));
+        }
+
+        this.rooms = [];
+        let attempts = 0;
+        while (this.rooms.length < 8 && attempts < 80) {
+            attempts++;
+            const w = 4 + Math.floor(Math.random() * 4);
+            const h = 4 + Math.floor(Math.random() * 4);
+            const c = 2 + Math.floor(Math.random() * (this.cols - w - 4));
+            const r = 2 + Math.floor(Math.random() * (this.rows - h - 4));
+
+            const overlaps = this.rooms.some(other =>
+                c - 1 < other.c + other.w + 1 && c + w + 1 > other.c - 1 &&
+                r - 1 < other.r + other.h + 1 && r + h + 1 > other.r - 1
+            );
+            if (overlaps) continue;
+
+            this.rooms.push({ r, c, w, h });
+            for (let rr = r; rr < r + h; rr++) {
+                for (let cc = c; cc < c + w; cc++) {
+                    this.grid[rr][cc] = 0;
+                }
+            }
+        }
+
+        // Failsafe: pathological RNG produced no layout — fall back to one big hall
+        if (this.rooms.length < 2) {
+            for (let r = 2; r < this.rows - 2; r++) {
+                for (let c = 2; c < this.cols - 2; c++) {
+                    this.grid[r][c] = 0;
+                }
+            }
+            this.rooms = [{ r: 2, c: 2, w: this.cols - 4, h: this.rows - 4 }];
+        }
+
+        const center = room => ({
+            c: room.c + Math.floor(room.w / 2),
+            r: room.r + Math.floor(room.h / 2)
+        });
+
+        for (let i = 1; i < this.rooms.length; i++) {
+            const a = center(this.rooms[i - 1]);
+            const b = center(this.rooms[i]);
+            if (Math.random() < 0.5) {
+                this.carveCorridor(a.c, b.c, a.r, true);
+                this.carveCorridor(a.r, b.r, b.c, false);
+            } else {
+                this.carveCorridor(a.r, b.r, a.c, false);
+                this.carveCorridor(a.c, b.c, b.r, true);
+            }
+        }
+
+        // Spawn in the first room; stairs in the room farthest from spawn;
+        // boss in the largest room (preferring one that isn't the spawn room)
+        const spawn = center(this.rooms[0]);
+        this.spawnPoint = this.tileToWorld(spawn.c, spawn.r);
+
+        let farthest = this.rooms[0];
+        let bestDist = -1;
+        this.rooms.forEach(room => {
+            const cc = center(room);
+            const d = Math.hypot(cc.c - spawn.c, cc.r - spawn.r);
+            if (d > bestDist) {
+                bestDist = d;
+                farthest = room;
+            }
+        });
+        const stairsTile = center(farthest);
+        this.stairsPoint = this.tileToWorld(stairsTile.c, stairsTile.r);
+
+        const candidates = this.rooms.length > 1 ? this.rooms.slice(1) : this.rooms;
+        let largest = candidates[0];
+        candidates.forEach(room => {
+            if (room.w * room.h > largest.w * largest.h) largest = room;
+        });
+        const bossTile = center(largest);
+        this.bossPoint = this.tileToWorld(bossTile.c, bossTile.r);
+    }
+
+    // Carves a 2-wide straight corridor along one axis at a fixed cross position
+    carveCorridor(from, to, fixed, horizontal) {
+        const lo = Math.min(from, to);
+        const hi = Math.max(from, to);
+        for (let i = lo; i <= hi; i++) {
+            for (let off = 0; off < 2; off++) {
+                const r = horizontal ? fixed + off : i;
+                const c = horizontal ? i : fixed + off;
+                if (r >= 1 && r < this.rows - 1 && c >= 1 && c < this.cols - 1) {
+                    this.grid[r][c] = 0;
+                }
+            }
         }
     }
 
@@ -483,8 +634,8 @@ class TileMap {
                             imgHeight
                         );
                     } else {
-                        ctx.fillStyle = this.type === 'town' ? '#152515' : '#1c1712';
-                        ctx.strokeStyle = this.type === 'town' ? '#223822' : '#2b2118';
+                        ctx.fillStyle = this.palette.fallbackFloor;
+                        ctx.strokeStyle = this.palette.fallbackStroke;
                         ctx.lineWidth = 1;
                         ctx.beginPath();
                         ctx.moveTo(screenX, screenY - this.tileSize / 2);
@@ -495,49 +646,126 @@ class TileMap {
                         ctx.fill();
                         ctx.stroke();
                     }
-                } else if (tileType === 1) {
-                    const heightOffset = 40;
-                    const w = this.tileSize;
-
-                    const wallShade = TileMap.cellHash(r, c) % 3;
-                    const topTones = this.type === 'town'
-                        ? ['#223b22', '#1f3a26', '#264226']
-                        : ['#2d241e', '#332a22', '#2a2520'];
-                    ctx.fillStyle = topTones.at(wallShade);
-                    ctx.beginPath();
-                    ctx.moveTo(screenX, screenY - w / 2 - heightOffset);
-                    ctx.lineTo(screenX + w, screenY - heightOffset);
-                    ctx.lineTo(screenX, screenY + w / 2 - heightOffset);
-                    ctx.lineTo(screenX - w, screenY - heightOffset);
-                    ctx.closePath();
-                    ctx.fill();
-
-                    ctx.fillStyle = this.type === 'town' ? '#172b17' : '#1e1814';
-                    ctx.beginPath();
-                    ctx.moveTo(screenX - w, screenY - heightOffset);
-                    ctx.lineTo(screenX, screenY + w / 2 - heightOffset);
-                    ctx.lineTo(screenX, screenY + w / 2);
-                    ctx.lineTo(screenX - w, screenY);
-                    ctx.closePath();
-                    ctx.fill();
-
-                    ctx.fillStyle = this.type === 'town' ? '#0f1f0f' : '#15100d';
-                    ctx.beginPath();
-                    ctx.moveTo(screenX, screenY + w / 2 - heightOffset);
-                    ctx.lineTo(screenX + w, screenY - heightOffset);
-                    ctx.lineTo(screenX + w, screenY);
-                    ctx.lineTo(screenX, screenY + w / 2);
-                    ctx.closePath();
-                    ctx.fill();
-
-                    ctx.strokeStyle = this.type === 'town' ? '#325232' : '#4a3b30';
-                    ctx.lineWidth = 1.5;
-                    ctx.stroke();
                 }
+                // Walls (tileType 1) are depth-sorted with entities and drawn
+                // via renderWallTile so they can occlude or fade around actors
             }
         }
     }
+
+    renderWallTile(ctx, screenX, screenY, r, c, alpha = 1) {
+        const heightOffset = 40;
+        const w = this.tileSize;
+        const hash = TileMap.cellHash(r, c);
+        const pal = this.palette;
+
+        ctx.save();
+        if (alpha < 1) ctx.globalAlpha = alpha;
+
+        ctx.fillStyle = pal.wallTop.at(hash % 3);
+        ctx.beginPath();
+        ctx.moveTo(screenX, screenY - w / 2 - heightOffset);
+        ctx.lineTo(screenX + w, screenY - heightOffset);
+        ctx.lineTo(screenX, screenY + w / 2 - heightOffset);
+        ctx.lineTo(screenX - w, screenY - heightOffset);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = pal.wallLeft;
+        ctx.beginPath();
+        ctx.moveTo(screenX - w, screenY - heightOffset);
+        ctx.lineTo(screenX, screenY + w / 2 - heightOffset);
+        ctx.lineTo(screenX, screenY + w / 2);
+        ctx.lineTo(screenX - w, screenY);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = pal.wallRight;
+        ctx.beginPath();
+        ctx.moveTo(screenX, screenY + w / 2 - heightOffset);
+        ctx.lineTo(screenX + w, screenY - heightOffset);
+        ctx.lineTo(screenX + w, screenY);
+        ctx.lineTo(screenX, screenY + w / 2);
+        ctx.closePath();
+        ctx.fill();
+
+        // Mortar lines give the flat faces a rough brick texture
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.28)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let k = 1; k <= 2; k++) {
+            const dy = (heightOffset / 3) * k + (hash % 5) - 2;
+            ctx.moveTo(screenX - w, screenY - heightOffset + dy);
+            ctx.lineTo(screenX, screenY + w / 2 - heightOffset + dy);
+            ctx.moveTo(screenX, screenY + w / 2 - heightOffset + dy);
+            ctx.lineTo(screenX + w, screenY - heightOffset + dy);
+        }
+        // one vertical seam per face, position varied by cell hash
+        const seamL = 0.25 + (hash % 7) * 0.07;
+        ctx.moveTo(screenX - w + w * seamL, screenY - heightOffset + (w / 2) * seamL);
+        ctx.lineTo(screenX - w + w * seamL, screenY - heightOffset + (w / 2) * seamL + heightOffset);
+        const seamR = 0.25 + (hash % 5) * 0.09;
+        ctx.moveTo(screenX + w * seamR, screenY + w / 2 - heightOffset - (w / 2) * seamR);
+        ctx.lineTo(screenX + w * seamR, screenY + w / 2 - heightOffset - (w / 2) * seamR + heightOffset);
+        ctx.stroke();
+
+        ctx.strokeStyle = pal.wallStroke;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(screenX, screenY + w / 2 - heightOffset);
+        ctx.lineTo(screenX + w, screenY - heightOffset);
+        ctx.lineTo(screenX + w, screenY);
+        ctx.lineTo(screenX, screenY + w / 2);
+        ctx.closePath();
+        ctx.stroke();
+
+        ctx.restore();
+    }
 }
+
+// Floor-depth palettes: tiers 0-2 cover floors 1-3, 4-6, 7+
+TileMap.PALETTES = {
+    town: {
+        base: ['#1d3a1d', '#1a331a', '#214221', '#183018'],
+        tint: null,
+        wallTop: ['#223b22', '#1f3a26', '#264226'],
+        wallLeft: '#172b17',
+        wallRight: '#0f1f0f',
+        wallStroke: '#325232',
+        fallbackFloor: '#152515',
+        fallbackStroke: '#223822'
+    },
+    dungeon0: {
+        base: ['#262019', '#221c16', '#2a231b', '#1f1a14'],
+        tint: null,
+        wallTop: ['#2d241e', '#332a22', '#2a2520'],
+        wallLeft: '#1e1814',
+        wallRight: '#15100d',
+        wallStroke: '#4a3b30',
+        fallbackFloor: '#1c1712',
+        fallbackStroke: '#2b2118'
+    },
+    dungeon1: {
+        base: ['#1b212b', '#171c25', '#1e2530', '#141a22'],
+        tint: 'rgba(50, 80, 140, 0.16)',
+        wallTop: ['#28303e', '#2d3645', '#242c39'],
+        wallLeft: '#1a212c',
+        wallRight: '#11161e',
+        wallStroke: '#46546c',
+        fallbackFloor: '#161b23',
+        fallbackStroke: '#242d3a'
+    },
+    dungeon2: {
+        base: ['#2b1a15', '#251511', '#321e17', '#1f110d'],
+        tint: 'rgba(160, 40, 10, 0.14)',
+        wallTop: ['#3c2620', '#442c24', '#36221c'],
+        wallLeft: '#26160f',
+        wallRight: '#1a0e09',
+        wallStroke: '#6a4030',
+        fallbackFloor: '#221410',
+        fallbackStroke: '#35201a'
+    }
+};
 
 // ==========================================
 // 4. PLAYER HERO ENGINE
@@ -1495,6 +1723,365 @@ class Npc {
 }
 
 // ==========================================
+// 6.7. DECORATIVE PROP ENGINE
+// ==========================================
+class Prop {
+    constructor(x, y, type) {
+        this.x = x;
+        this.y = y;
+        this.type = type;
+        this.animTimer = Math.random() * 10;
+        this.seed = Math.floor(Math.random() * 1000);
+        // Flat decals draw beneath every actor and wall
+        this.depthOffset = (type === 'stairs' || type === 'bones') ? -1e6 : 0;
+    }
+
+    update() {
+        this.animTimer += 0.08;
+    }
+
+    // Light radius for the dungeon darkness pass (0 = not a light source)
+    lightRadius() {
+        if (this.type === 'torch') return 105 + Math.sin(this.animTimer * 4) * 8;
+        if (this.type === 'campfire') return 130 + Math.sin(this.animTimer * 3) * 10;
+        return 0;
+    }
+
+    render(ctx, camera, viewWidth, viewHeight) {
+        const isoCam = camera.getIsoOffset();
+        const screenX = (this.x - this.y) - isoCam.x + viewWidth / 2;
+        const screenY = (this.x + this.y) * 0.5 - isoCam.y + viewHeight / 2;
+
+        const buffer = 120;
+        if (screenX < -buffer || screenX > viewWidth + buffer ||
+            screenY < -buffer || screenY > viewHeight + buffer) {
+            return;
+        }
+
+        ctx.save();
+        const draw = Prop.RENDERERS[this.type];
+        if (draw) draw(ctx, screenX, screenY, this);
+        ctx.restore();
+    }
+}
+
+Prop.RENDERERS = {
+    torch(ctx, x, y, p) {
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.beginPath();
+        ctx.ellipse(x, y + 2, 6, 3, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // pole and iron bowl
+        ctx.fillStyle = '#2a2018';
+        ctx.fillRect(x - 1.5, y - 26, 3, 27);
+        ctx.fillStyle = '#3a322a';
+        ctx.beginPath();
+        ctx.ellipse(x, y - 26, 5, 2.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // flickering flame
+        const f = Math.sin(p.animTimer * 5 + p.seed) * 2;
+        ctx.shadowBlur = 12;
+        ctx.shadowColor = '#ff8800';
+        ctx.fillStyle = '#ff6600';
+        ctx.beginPath();
+        ctx.ellipse(x, y - 32 - f * 0.5, 3.5, 6 + f, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ffcc44';
+        ctx.beginPath();
+        ctx.ellipse(x, y - 31 - f * 0.4, 1.8, 3.5 + f * 0.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+    },
+
+    pillar(ctx, x, y) {
+        ctx.fillStyle = 'rgba(0,0,0,0.35)';
+        ctx.beginPath();
+        ctx.ellipse(x, y + 3, 11, 5.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+        const grad = ctx.createLinearGradient(x - 8, 0, x + 8, 0);
+        grad.addColorStop(0, '#4a4036');
+        grad.addColorStop(0.5, '#6a5d4e');
+        grad.addColorStop(1, '#3a322a');
+        ctx.fillStyle = grad;
+        ctx.fillRect(x - 8, y - 46, 16, 48);
+        // capital and base
+        ctx.fillStyle = '#55483c';
+        ctx.fillRect(x - 10, y - 50, 20, 6);
+        ctx.fillRect(x - 10, y - 2, 20, 5);
+        ctx.fillStyle = 'rgba(0,0,0,0.25)';
+        ctx.fillRect(x - 8, y - 30, 16, 2);
+        ctx.fillRect(x - 8, y - 16, 16, 2);
+    },
+
+    bones(ctx, x, y) {
+        ctx.fillStyle = '#b8b2a2';
+        ctx.fillRect(x - 8, y - 1, 12, 2.5);
+        ctx.fillRect(x + 2, y - 5, 2.5, 9);
+        ctx.beginPath();
+        ctx.arc(x - 5, y - 5, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#1a1410';
+        ctx.fillRect(x - 7, y - 6, 1.5, 1.5);
+        ctx.fillRect(x - 4, y - 6, 1.5, 1.5);
+    },
+
+    sarcophagus(ctx, x, y) {
+        ctx.fillStyle = 'rgba(0,0,0,0.35)';
+        ctx.beginPath();
+        ctx.ellipse(x, y + 4, 26, 12, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // iso stone box
+        ctx.fillStyle = '#3f372d';
+        ctx.beginPath();
+        ctx.moveTo(x - 24, y - 4);
+        ctx.lineTo(x, y + 8);
+        ctx.lineTo(x, y + 22);
+        ctx.lineTo(x - 24, y + 10);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = '#322b23';
+        ctx.beginPath();
+        ctx.moveTo(x, y + 8);
+        ctx.lineTo(x + 24, y - 4);
+        ctx.lineTo(x + 24, y + 10);
+        ctx.lineTo(x, y + 22);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = '#574c3e';
+        ctx.beginPath();
+        ctx.moveTo(x - 24, y - 18);
+        ctx.lineTo(x, y - 6);
+        ctx.lineTo(x + 24, y - 18);
+        ctx.lineTo(x, y - 30);
+        ctx.closePath();
+        ctx.fill();
+        // lid seam + carving
+        ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x - 24, y - 4);
+        ctx.lineTo(x, y + 8);
+        ctx.lineTo(x + 24, y - 4);
+        ctx.moveTo(x - 10, y - 18);
+        ctx.lineTo(x + 10, y - 18);
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(0,0,0,0.55)';
+        ctx.fillRect(x - 24, y - 5, 48, 2);
+    },
+
+    jar(ctx, x, y) {
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.beginPath();
+        ctx.ellipse(x, y + 2, 7, 3.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#7a5230';
+        ctx.beginPath();
+        ctx.ellipse(x, y - 6, 6.5, 8, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#5e3f24';
+        ctx.fillRect(x - 3, y - 17, 6, 4);
+        ctx.fillStyle = 'rgba(255,255,255,0.12)';
+        ctx.beginPath();
+        ctx.ellipse(x - 2.5, y - 8, 2, 4.5, -0.3, 0, Math.PI * 2);
+        ctx.fill();
+    },
+
+    stairs(ctx, x, y, p) {
+        // dark descending hatch with glowing rim so it reads as the exit
+        const pulse = 0.5 + Math.sin(p.animTimer * 2) * 0.2;
+        ctx.fillStyle = '#060403';
+        ctx.beginPath();
+        ctx.moveTo(x, y - 16);
+        ctx.lineTo(x + 32, y);
+        ctx.lineTo(x, y + 16);
+        ctx.lineTo(x - 32, y);
+        ctx.closePath();
+        ctx.fill();
+        // descending steps as shrinking concentric rims
+        ctx.strokeStyle = 'rgba(150, 130, 90, 0.5)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        for (let i = 1; i <= 3; i++) {
+            const s = 1 - i * 0.24;
+            ctx.moveTo(x, y - 16 * s);
+            ctx.lineTo(x + 32 * s, y);
+            ctx.lineTo(x, y + 16 * s);
+            ctx.lineTo(x - 32 * s, y);
+            ctx.closePath();
+        }
+        ctx.stroke();
+        ctx.strokeStyle = `rgba(255, 200, 90, ${pulse})`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(x, y - 16);
+        ctx.lineTo(x + 32, y);
+        ctx.lineTo(x, y + 16);
+        ctx.lineTo(x - 32, y);
+        ctx.closePath();
+        ctx.stroke();
+        ctx.fillStyle = `rgba(255, 200, 90, ${pulse * 0.9})`;
+        ctx.font = 'bold 10px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('아래층', x, y - 22);
+    },
+
+    house(ctx, x, y) {
+        // front-left and front-right walls
+        ctx.fillStyle = '#4a3b2c';
+        ctx.beginPath();
+        ctx.moveTo(x - 56, y - 38);
+        ctx.lineTo(x, y - 10);
+        ctx.lineTo(x, y + 26);
+        ctx.lineTo(x - 56, y - 2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = '#3a2d20';
+        ctx.beginPath();
+        ctx.moveTo(x, y - 10);
+        ctx.lineTo(x + 56, y - 38);
+        ctx.lineTo(x + 56, y - 2);
+        ctx.lineTo(x, y + 26);
+        ctx.closePath();
+        ctx.fill();
+        // roof slopes
+        ctx.fillStyle = '#6e3b28';
+        ctx.beginPath();
+        ctx.moveTo(x - 62, y - 36);
+        ctx.lineTo(x, y - 66);
+        ctx.lineTo(x + 8, y - 62);
+        ctx.lineTo(x + 4, y - 8);
+        ctx.lineTo(x, y - 6);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = '#532c1e';
+        ctx.beginPath();
+        ctx.moveTo(x + 62, y - 36);
+        ctx.lineTo(x, y - 66);
+        ctx.lineTo(x + 4, y - 8);
+        ctx.closePath();
+        ctx.fill();
+        // door and window
+        ctx.fillStyle = '#241a10';
+        ctx.beginPath();
+        ctx.moveTo(x - 26, y - 6);
+        ctx.lineTo(x - 12, y + 1);
+        ctx.lineTo(x - 12, y + 17);
+        ctx.lineTo(x - 26, y + 10);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = '#d4af37';
+        ctx.fillRect(x + 18, y - 14, 12, 9);
+        ctx.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx.fillRect(x + 23, y - 14, 2, 9);
+        ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x + 18, y - 14, 12, 9);
+    },
+
+    well(ctx, x, y) {
+        ctx.fillStyle = 'rgba(0,0,0,0.35)';
+        ctx.beginPath();
+        ctx.ellipse(x, y + 4, 20, 10, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // stone ring
+        ctx.fillStyle = '#5e564a';
+        ctx.beginPath();
+        ctx.ellipse(x, y, 18, 9, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#0a1418';
+        ctx.beginPath();
+        ctx.ellipse(x, y - 1, 12, 6, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // posts and tiny roof
+        ctx.fillStyle = '#3e2c1c';
+        ctx.fillRect(x - 16, y - 26, 3, 26);
+        ctx.fillRect(x + 13, y - 26, 3, 26);
+        ctx.fillStyle = '#6e3b28';
+        ctx.beginPath();
+        ctx.moveTo(x - 22, y - 24);
+        ctx.lineTo(x, y - 36);
+        ctx.lineTo(x + 22, y - 24);
+        ctx.lineTo(x, y - 30);
+        ctx.closePath();
+        ctx.fill();
+    },
+
+    campfire(ctx, x, y, p) {
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.beginPath();
+        ctx.ellipse(x, y + 2, 14, 7, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // stone ring + logs
+        ctx.fillStyle = '#55504a';
+        for (let i = 0; i < 7; i++) {
+            const a = (i / 7) * Math.PI * 2;
+            ctx.beginPath();
+            ctx.ellipse(x + Math.cos(a) * 12, y + Math.sin(a) * 6, 3, 2, 0, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.strokeStyle = '#4a3320';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(x - 7, y + 3);
+        ctx.lineTo(x + 7, y - 3);
+        ctx.moveTo(x - 7, y - 3);
+        ctx.lineTo(x + 7, y + 3);
+        ctx.stroke();
+        // flames
+        const f = Math.sin(p.animTimer * 6 + p.seed) * 2.5;
+        ctx.shadowBlur = 16;
+        ctx.shadowColor = '#ff7700';
+        ctx.fillStyle = '#ff5500';
+        ctx.beginPath();
+        ctx.ellipse(x, y - 8 - f * 0.5, 6, 10 + f, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ffbb33';
+        ctx.beginPath();
+        ctx.ellipse(x, y - 6 - f * 0.3, 3, 6 + f * 0.6, 0, 0, Math.PI * 2);
+        ctx.fill();
+    },
+
+    fence(ctx, x, y) {
+        ctx.fillStyle = '#3e2c1c';
+        ctx.fillRect(x - 14, y - 14, 3, 16);
+        ctx.fillRect(x + 11, y - 14, 3, 16);
+        ctx.fillStyle = '#4a3522';
+        ctx.fillRect(x - 14, y - 12, 28, 2.5);
+        ctx.fillRect(x - 14, y - 5, 28, 2.5);
+    },
+
+    crate(ctx, x, y) {
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.beginPath();
+        ctx.ellipse(x, y + 2, 12, 6, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#6a4d2e';
+        ctx.beginPath();
+        ctx.moveTo(x - 12, y - 6);
+        ctx.lineTo(x, y);
+        ctx.lineTo(x, y + 14);
+        ctx.lineTo(x - 12, y + 8);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = '#54391f';
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + 12, y - 6);
+        ctx.lineTo(x + 12, y + 8);
+        ctx.lineTo(x, y + 14);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = '#7e5c38';
+        ctx.beginPath();
+        ctx.moveTo(x - 12, y - 6);
+        ctx.lineTo(x, y - 12);
+        ctx.lineTo(x + 12, y - 6);
+        ctx.lineTo(x, y);
+        ctx.closePath();
+        ctx.fill();
+    }
+};
+
+// ==========================================
 // 7. FLOATING TEXT EFFECTS ENGINE
 // ==========================================
 class FloaterManager {
@@ -1619,15 +2206,22 @@ class Game {
         this.isGameRunning = false;
 
         this.currentMap = 'dungeon';
-        this.dungeonMap = new TileMap(64, 'dungeon');
+        this.floor = 1;
+        this.dungeonMap = new TileMap(64, 'dungeon', this.floor);
         this.townMap = new TileMap(64, 'town');
         this.map = this.dungeonMap;
-        
-        const spawnCartX = 15 * this.map.tileSize + this.map.tileSize / 2;
-        const spawnCartY = 15 * this.map.tileSize + this.map.tileSize / 2;
-        this.player = new Player(spawnCartX, spawnCartY);
-        
-        this.camera = new Camera(spawnCartX, spawnCartY);
+
+        const spawn = this.dungeonMap.spawnPoint;
+        this.player = new Player(spawn.x, spawn.y);
+
+        this.camera = new Camera(spawn.x, spawn.y);
+
+        this.props = this.buildDungeonProps(this.dungeonMap);
+        this.townProps = this.buildTownProps();
+        this.particles = this.initParticles();
+        this.lightCanvas = null;
+        const minimapEl = document.getElementById('minimap');
+        this.minimapCtx = minimapEl ? minimapEl.getContext('2d') : null;
 
         this.monsters = [];
         this.projectiles = [];
@@ -2068,6 +2662,9 @@ class Game {
                 document.getElementById('stats-panel').classList.toggle('hidden');
             } else if (code === 'KeyK' || key === 'K') {
                 document.getElementById('skills-panel').classList.toggle('hidden');
+            } else if (code === 'KeyM' || key === 'M') {
+                const mmEl = document.getElementById('minimap');
+                if (mmEl) mmEl.classList.toggle('hidden');
             } else if (code === 'KeyT' || key === 'T') {
                 this.triggerTownPortal();
             }
@@ -2324,6 +2921,336 @@ class Game {
         this.ctx.translate(-hw, -hh);
     }
 
+    // World coords -> final on-screen pixels (zoom applied), for screen-space
+    // passes like lighting and the occlusion check
+    worldToScreen(wx, wy) {
+        const isoCam = this.camera.getIsoOffset();
+        const hw = this.canvas.width / 2;
+        const hh = this.canvas.height / 2;
+        const vx = (wx - wy) - isoCam.x + hw;
+        const vy = (wx + wy) * 0.5 - isoCam.y + hh;
+        return {
+            x: hw + (vx - hw) * this.zoom,
+            y: hh + (vy - hh) * this.zoom
+        };
+    }
+
+    buildDungeonProps(map) {
+        const props = [];
+        const t = map.tileSize;
+        const stairs = map.stairsPoint;
+
+        map.rooms.forEach((room, i) => {
+            // torches on two random inner corners of every room
+            const corners = [
+                [room.c, room.r],
+                [room.c + room.w - 1, room.r],
+                [room.c, room.r + room.h - 1],
+                [room.c + room.w - 1, room.r + room.h - 1]
+            ].sort(() => Math.random() - 0.5);
+            corners.slice(0, 2).forEach(([cc, rr]) => {
+                const pos = map.tileToWorld(cc, rr);
+                props.push(new Prop(pos.x, pos.y, 'torch'));
+            });
+
+            // centerpiece for rooms other than the spawn room
+            if (i > 0 && room.w >= 5 && room.h >= 5) {
+                const centerPos = map.tileToWorld(
+                    room.c + Math.floor(room.w / 2),
+                    room.r + Math.floor(room.h / 2)
+                );
+                if (Math.hypot(centerPos.x - stairs.x, centerPos.y - stairs.y) > t) {
+                    const roll = Math.random();
+                    if (roll < 0.35) {
+                        props.push(new Prop(centerPos.x, centerPos.y, 'sarcophagus'));
+                    } else if (roll < 0.6) {
+                        const leftPos = map.tileToWorld(room.c + 1, room.r + Math.floor(room.h / 2));
+                        const rightPos = map.tileToWorld(room.c + room.w - 2, room.r + Math.floor(room.h / 2));
+                        props.push(new Prop(leftPos.x, leftPos.y, 'pillar'));
+                        props.push(new Prop(rightPos.x, rightPos.y, 'pillar'));
+                    }
+                }
+            }
+        });
+
+        // scattered debris on random floor tiles, away from spawn and stairs
+        for (let k = 0; k < 10; k++) {
+            const c = 2 + Math.floor(Math.random() * (map.cols - 4));
+            const r = 2 + Math.floor(Math.random() * (map.rows - 4));
+            const pos = map.tileToWorld(c, r);
+            if (map.grid[r][c] !== 0) continue;
+            if (Math.hypot(pos.x - map.spawnPoint.x, pos.y - map.spawnPoint.y) < t * 2) continue;
+            if (Math.hypot(pos.x - stairs.x, pos.y - stairs.y) < t * 1.5) continue;
+            props.push(new Prop(pos.x, pos.y, Math.random() < 0.5 ? 'bones' : 'jar'));
+        }
+
+        props.push(new Prop(stairs.x, stairs.y, 'stairs'));
+        return props;
+    }
+
+    buildTownProps() {
+        const props = [];
+        const map = this.townMap;
+        const at = (c, r, type) => {
+            const pos = map.tileToWorld(c, r);
+            props.push(new Prop(pos.x, pos.y, type));
+        };
+
+        // houses sit on the solid footprints marked in generateTown
+        map.houseSpots.forEach(spot => {
+            const pos = map.tileToWorld(spot.c + spot.w / 2 - 0.5, spot.r + spot.h / 2 - 0.5);
+            props.push(new Prop(pos.x, pos.y, 'house'));
+        });
+
+        at(11, 9, 'well');
+        at(5, 8, 'campfire');
+        at(10, 4, 'crate');
+        at(12, 5, 'crate');
+        [3, 4, 5].forEach(c => at(c, 12, 'fence'));
+        [10, 11, 12].forEach(c => at(c, 12, 'fence'));
+        return props;
+    }
+
+    initParticles() {
+        const particles = [];
+        for (let i = 0; i < 28; i++) {
+            particles.push({
+                x: Math.random() * window.innerWidth,
+                y: Math.random() * window.innerHeight,
+                vx: (Math.random() - 0.5) * 0.2,
+                vy: -0.15 - Math.random() * 0.25,
+                size: 1 + Math.random() * 1.6,
+                alpha: 0.12 + Math.random() * 0.25,
+                phase: Math.random() * Math.PI * 2
+            });
+        }
+        return particles;
+    }
+
+    updateParticles() {
+        const w = this.canvas.width;
+        const h = this.canvas.height;
+        for (const p of this.particles) {
+            p.x += p.vx;
+            p.y += p.vy;
+            p.phase += 0.03;
+            if (p.y < -10) { p.y = h + 10; p.x = Math.random() * w; }
+            if (p.x < -10) p.x = w + 10;
+            if (p.x > w + 10) p.x = -10;
+        }
+    }
+
+    renderParticles() {
+        const ctx = this.ctx;
+        const ember = this.currentMap === 'dungeon';
+        ctx.save();
+        for (const p of this.particles) {
+            const twinkle = p.alpha * (0.6 + Math.sin(p.phase) * 0.4);
+            ctx.fillStyle = ember
+                ? `rgba(255, 150, 70, ${twinkle})`
+                : `rgba(190, 230, 150, ${twinkle * 0.8})`;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.restore();
+    }
+
+    // Darkness overlay with light holes punched out (dungeon only)
+    renderLighting() {
+        if (this.currentMap !== 'dungeon') return;
+
+        if (!this.lightCanvas) {
+            this.lightCanvas = document.createElement('canvas');
+        }
+        if (this.lightCanvas.width !== this.canvas.width || this.lightCanvas.height !== this.canvas.height) {
+            this.lightCanvas.width = this.canvas.width;
+            this.lightCanvas.height = this.canvas.height;
+        }
+
+        const lctx = this.lightCanvas.getContext('2d');
+        lctx.globalCompositeOperation = 'source-over';
+        lctx.clearRect(0, 0, this.lightCanvas.width, this.lightCanvas.height);
+        lctx.fillStyle = 'rgba(0, 0, 0, 0.93)';
+        lctx.fillRect(0, 0, this.lightCanvas.width, this.lightCanvas.height);
+
+        const lights = [];
+        const pPos = this.worldToScreen(this.player.x, this.player.y);
+        lights.push({ x: pPos.x, y: pPos.y - 30 * this.zoom, r: 290 });
+
+        for (const proj of this.projectiles) {
+            const pos = this.worldToScreen(proj.x, proj.y);
+            lights.push({ x: pos.x, y: pos.y, r: 80 + proj.level * 6 });
+        }
+        if (this.dungeonPortal) {
+            const pos = this.worldToScreen(this.dungeonPortal.x, this.dungeonPortal.y);
+            lights.push({ x: pos.x, y: pos.y, r: 130 });
+        }
+        for (const prop of this.props) {
+            const r = prop.lightRadius();
+            if (r > 0) {
+                const pos = this.worldToScreen(prop.x, prop.y);
+                lights.push({ x: pos.x, y: pos.y - 28 * this.zoom, r });
+            }
+        }
+
+        lctx.globalCompositeOperation = 'destination-out';
+        for (const light of lights) {
+            const radius = light.r * this.zoom;
+            const grad = lctx.createRadialGradient(light.x, light.y, 0, light.x, light.y, radius);
+            grad.addColorStop(0, 'rgba(0, 0, 0, 1)');
+            grad.addColorStop(0.55, 'rgba(0, 0, 0, 0.75)');
+            grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+            lctx.fillStyle = grad;
+            lctx.beginPath();
+            lctx.arc(light.x, light.y, radius, 0, Math.PI * 2);
+            lctx.fill();
+        }
+        lctx.globalCompositeOperation = 'source-over';
+
+        this.ctx.drawImage(this.lightCanvas, 0, 0);
+    }
+
+    // Collect on-screen wall tiles as depth-sorted drawables; walls covering
+    // the player turn translucent so they never hide the hero
+    collectWallEntities(entities) {
+        const map = this.map;
+        const isoCam = this.camera.getIsoOffset();
+        const hw = this.canvas.width / 2;
+        const hh = this.canvas.height / 2;
+
+        const pIso = { x: this.player.x - this.player.y, y: (this.player.x + this.player.y) * 0.5 };
+        const px = pIso.x - isoCam.x + hw;
+        const py = pIso.y - isoCam.y + hh;
+        const playerDepth = this.player.x + this.player.y;
+
+        for (let r = 0; r < map.rows; r++) {
+            for (let c = 0; c < map.cols; c++) {
+                if (map.grid[r][c] !== 1) continue;
+
+                const cartX = c * map.tileSize + map.tileSize / 2;
+                const cartY = r * map.tileSize + map.tileSize / 2;
+                const sx = (cartX - cartY) - isoCam.x + hw;
+                const sy = (cartX + cartY) * 0.5 - isoCam.y + hh;
+
+                const buffer = 160;
+                if (sx < -buffer || sx > this.canvas.width + buffer ||
+                    sy < -buffer || sy > this.canvas.height + buffer) {
+                    continue;
+                }
+
+                const depth = cartX + cartY;
+                let alpha = 1;
+                if (depth > playerDepth && Math.abs(sx - px) < 72 && sy - py > -8 && sy - py < 100) {
+                    alpha = 0.4;
+                }
+
+                entities.push({
+                    depth,
+                    render: () => map.renderWallTile(this.ctx, sx, sy, r, c, alpha)
+                });
+            }
+        }
+    }
+
+    descendStairs() {
+        this.floor++;
+        this.dungeonMap = new TileMap(64, 'dungeon', this.floor);
+        this.map = this.dungeonMap;
+        this.monsters = [];
+        this.projectiles = [];
+        this.dungeonPortal = null;
+        this.townPortal = null;
+        this.props = this.buildDungeonProps(this.dungeonMap);
+
+        const spawn = this.dungeonMap.spawnPoint;
+        this.player.x = spawn.x;
+        this.player.y = spawn.y;
+        this.player.targetX = spawn.x;
+        this.player.targetY = spawn.y;
+        this.camera.x = spawn.x;
+        this.camera.y = spawn.y;
+
+        sfx.playBossSpawn();
+        this.floaters.add(this.player.x, this.player.y - 20, `지하 ${this.floor}층`, '#ffcc44');
+        this.spawnInitialMonsters();
+        this.updateUI();
+    }
+
+    // Reveal minimap tiles around the player (fog of war)
+    updateExploration() {
+        const map = this.map;
+        const pc = Math.floor(this.player.x / map.tileSize);
+        const pr = Math.floor(this.player.y / map.tileSize);
+        for (let dr = -5; dr <= 5; dr++) {
+            for (let dc = -5; dc <= 5; dc++) {
+                const r = pr + dr;
+                const c = pc + dc;
+                if (r >= 0 && r < map.rows && c >= 0 && c < map.cols) {
+                    map.explored[r][c] = true;
+                }
+            }
+        }
+    }
+
+    renderMinimap() {
+        if (!this.minimapCtx) return;
+        const mm = this.minimapCtx;
+        const size = mm.canvas.width;
+        mm.clearRect(0, 0, size, size);
+        if (!this.isGameRunning) return;
+
+        const map = this.map;
+        const px = size / Math.max(map.cols, map.rows);
+        const isTown = this.currentMap === 'town';
+
+        for (let r = 0; r < map.rows; r++) {
+            for (let c = 0; c < map.cols; c++) {
+                if (!map.explored[r][c]) continue;
+                if (map.grid[r][c] === 1) {
+                    mm.fillStyle = isTown ? 'rgba(90, 140, 90, 0.7)' : 'rgba(185, 165, 135, 0.6)';
+                } else {
+                    mm.fillStyle = isTown ? 'rgba(50, 90, 50, 0.4)' : 'rgba(110, 100, 85, 0.28)';
+                }
+                mm.fillRect(c * px, r * px, px + 0.5, px + 0.5);
+            }
+        }
+
+        const dot = (wx, wy, color, s) => {
+            mm.fillStyle = color;
+            mm.fillRect(wx / map.tileSize * px - s / 2, wy / map.tileSize * px - s / 2, s, s);
+        };
+
+        if (!isTown) {
+            const stairs = map.stairsPoint;
+            const sc = Math.floor(stairs.x / map.tileSize);
+            const sr = Math.floor(stairs.y / map.tileSize);
+            if (map.explored[sr] && map.explored[sr][sc]) dot(stairs.x, stairs.y, '#ffcc44', 5);
+
+            if (this.dungeonPortal) dot(this.dungeonPortal.x, this.dungeonPortal.y, '#00ffff', 4);
+
+            for (const m of this.monsters) {
+                if (m.state === 'death') continue;
+                const mc = Math.floor(m.x / map.tileSize);
+                const mr = Math.floor(m.y / map.tileSize);
+                if (mr < 0 || mr >= map.rows || mc < 0 || mc >= map.cols || !map.explored[mr][mc]) continue;
+                if (m.rank === 'boss') dot(m.x, m.y, '#ff2200', 5);
+                else if (m.rank === 'champion') dot(m.x, m.y, '#66aaff', 3);
+                else dot(m.x, m.y, '#ff5555', 2.5);
+            }
+        } else {
+            if (this.townPortal) dot(this.townPortal.x, this.townPortal.y, '#00ffff', 4);
+            dot(this.npc.x, this.npc.y, '#d4af37', 4);
+        }
+
+        dot(this.player.x, this.player.y, '#ffffff', 4);
+
+        mm.fillStyle = 'rgba(224, 216, 207, 0.9)';
+        mm.font = 'bold 11px sans-serif';
+        mm.textAlign = 'left';
+        mm.fillText(isTown ? '마을' : `지하 ${this.floor}층`, 6, size - 6);
+    }
+
     spawnInitialMonsters() {
         for (let i = 0; i < 5; i++) {
             this.spawnMonster();
@@ -2349,7 +3276,9 @@ class Game {
             return;
         }
 
-        const mLvl = Math.max(1, this.player.level + Math.floor(Math.random() * 3) - 1);
+        // Difficulty is tied to dungeon depth, not the player: each floor is a
+        // fixed-danger place and descending is the risk/reward decision
+        const mLvl = this.floor * 2 - 1 + Math.floor(Math.random() * 2);
         const rank = Math.random() < 0.10 ? 'champion' : 'normal';
         this.monsters.push(new Monster(rx, ry, mLvl, rank));
     }
@@ -2357,9 +3286,10 @@ class Game {
     spawnBoss() {
         if (this.monsters.some(m => m.rank === 'boss' && m.state !== 'death')) return false;
 
-        const cx = 15 * this.dungeonMap.tileSize + this.dungeonMap.tileSize / 2;
-        const cy = 15 * this.dungeonMap.tileSize + this.dungeonMap.tileSize / 2;
-        const boss = new Monster(cx, cy, this.player.level + 2, 'boss');
+        const bossPos = this.dungeonMap.bossPoint || this.dungeonMap.spawnPoint;
+        const cx = bossPos.x;
+        const cy = bossPos.y;
+        const boss = new Monster(cx, cy, this.floor * 2 + 1, 'boss');
         this.monsters.push(boss);
 
         sfx.playBossSpawn();
@@ -2722,6 +3652,11 @@ class Game {
             gambleBtn.disabled = (this.player.gold < gamblePrice || isInvFull);
         }
 
+        const floorEl = document.getElementById('stat-floor');
+        if (floorEl) {
+            floorEl.textContent = this.currentMap === 'town' ? '마을' : `지하 ${this.floor}층`;
+        }
+
         document.getElementById('stat-level').textContent = this.player.level.toString();
         document.getElementById('stat-atk').textContent = this.player.atk.toString();
         document.getElementById('stat-maxhp').textContent = this.player.maxHp.toString();
@@ -2763,13 +3698,10 @@ class Game {
 
     run() {
         if (!this.isGameRunning) {
-            this.ctx.fillStyle = '#080606';
-            this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
             this.camera.update(this.player.x, this.player.y);
-            this.applyZoom();
-            this.map.render(this.ctx, this.camera, this.canvas.width, this.canvas.height);
-            this.player.render(this.ctx, this.camera, this.canvas.width, this.canvas.height);
-            this.ctx.restore();
+            this.props.forEach(p => p.update());
+            this.updateParticles();
+            this.renderScene();
             requestAnimationFrame(() => this.run());
             return;
         }
@@ -2778,6 +3710,11 @@ class Game {
         this.processKeyboardMovement();
         this.player.update(this.map);
         this.camera.update(this.player.x, this.player.y);
+
+        const activeProps = this.currentMap === 'town' ? this.townProps : this.props;
+        activeProps.forEach(p => p.update());
+        this.updateParticles();
+        this.updateExploration();
 
         if (this.dungeonPortal) this.dungeonPortal.update();
         if (this.townPortal) this.townPortal.update();
@@ -2825,6 +3762,12 @@ class Game {
         }
 
         if (this.currentMap === 'dungeon') {
+            // Walking onto the stairs descends to a fresh, deeper floor
+            const stairs = this.map.stairsPoint;
+            if (stairs && Math.hypot(this.player.x - stairs.x, this.player.y - stairs.y) < 26) {
+                this.descendStairs();
+            }
+
             this.spawnTimer++;
             if (this.spawnTimer >= SPAWN_INTERVAL) {
                 this.spawnTimer = 0;
@@ -2881,42 +3824,55 @@ class Game {
         this.floaters.update();
 
         // --- DRAWING STEP ---
+        this.renderScene();
+
+        requestAnimationFrame(() => this.run());
+    }
+
+    renderScene() {
         this.ctx.fillStyle = '#080606';
         this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
 
         this.applyZoom();
         this.map.render(this.ctx, this.camera, this.canvas.width, this.canvas.height);
 
+        // Walls, props, actors and projectiles share one painter's-order list
         const entities = [];
-        entities.push({ type: 'player', ref: this.player, depth: this.player.x + this.player.y });
-        
+        this.collectWallEntities(entities);
+
+        const pushRef = ref => entities.push({
+            depth: ref.x + ref.y + (ref.depthOffset || 0),
+            render: () => ref.render(this.ctx, this.camera, this.canvas.width, this.canvas.height)
+        });
+
+        pushRef(this.player);
         if (this.currentMap === 'dungeon') {
-            for (const m of this.monsters) {
-                entities.push({ type: 'monster', ref: m, depth: m.x + m.y });
-            }
-            for (const p of this.projectiles) {
-                entities.push({ type: 'projectile', ref: p, depth: p.x + p.y });
-            }
-            if (this.dungeonPortal) {
-                entities.push({ type: 'portal', ref: this.dungeonPortal, depth: this.dungeonPortal.x + this.dungeonPortal.y });
-            }
-        } else if (this.currentMap === 'town') {
-            if (this.townPortal) {
-                entities.push({ type: 'portal', ref: this.townPortal, depth: this.townPortal.x + this.townPortal.y });
-            }
-            entities.push({ type: 'npc', ref: this.npc, depth: this.npc.x + this.npc.y });
+            this.props.forEach(pushRef);
+            this.monsters.forEach(pushRef);
+            this.projectiles.forEach(pushRef);
+            if (this.dungeonPortal) pushRef(this.dungeonPortal);
+        } else {
+            this.townProps.forEach(pushRef);
+            if (this.townPortal) pushRef(this.townPortal);
+            pushRef(this.npc);
         }
 
         entities.sort((a, b) => a.depth - b.depth);
-
         for (const ent of entities) {
-            ent.ref.render(this.ctx, this.camera, this.canvas.width, this.canvas.height);
+            ent.render();
         }
 
+        this.ctx.restore();
+
+        this.renderLighting();
+        this.renderParticles();
+
+        // Floaters render above the darkness so damage numbers stay readable
+        this.applyZoom();
         this.floaters.render(this.ctx, this.camera, this.canvas.width, this.canvas.height);
         this.ctx.restore();
 
-        requestAnimationFrame(() => this.run());
+        this.renderMinimap();
     }
 }
 

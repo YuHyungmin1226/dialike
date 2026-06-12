@@ -630,6 +630,23 @@ canvas {
     background: linear-gradient(180deg, #3a8fff 0%, #0033aa 100%);
 }
 
+/* Minimap / automap (override the global full-size canvas rule) */
+#minimap {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    width: 176px;
+    height: 176px;
+    background: rgba(8, 6, 6, 0.62);
+    border: 1px solid #4a3b30;
+    border-radius: 4px;
+    box-shadow: 0 0 12px rgba(0, 0, 0, 0.6);
+    pointer-events: none;
+}
+#minimap.hidden {
+    display: none;
+}
+
 .portal-icon {
     background: radial-gradient(circle, #ffffff 0%, #00ffff 35%, #0066cc 100%);
     border: 1px solid #00aaff;
