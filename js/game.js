@@ -1931,30 +1931,31 @@ class Game {
 
         window.addEventListener('keydown', e => {
             sfx.init();
+            const code = e.code;
             const key = e.key.toUpperCase();
-            if (key === 'W' || key === 'A' || key === 'S' || key === 'D') {
-                if (this.isGameRunning) this.keys[key] = true;
-            } else if (key === ',' || key === '<') {
+            if (code === 'KeyW' || code === 'KeyA' || code === 'KeyS' || code === 'KeyD') {
+                if (this.isGameRunning) this.keys[code[3]] = true; // 'W','A','S','D'
+            } else if (code === 'Comma' || key === ',' || key === '<') {
                 if (this.isGameRunning) this.triggerMeleeKey();
-            } else if (key === '.' || key === '>') {
+            } else if (code === 'Period' || key === '.' || key === '>') {
                 if (this.isGameRunning) this.triggerFireballKey();
-            } else if (key === 'Q') {
+            } else if (code === 'KeyQ' || key === 'Q') {
                 this.triggerPotion();
-            } else if (key === 'I') {
+            } else if (code === 'KeyI' || key === 'I') {
                 document.getElementById('inventory-panel').classList.toggle('hidden');
-            } else if (key === 'C') {
+            } else if (code === 'KeyC' || key === 'C') {
                 document.getElementById('stats-panel').classList.toggle('hidden');
-            } else if (key === 'K') {
+            } else if (code === 'KeyK' || key === 'K') {
                 document.getElementById('skills-panel').classList.toggle('hidden');
-            } else if (key === 'T') {
+            } else if (code === 'KeyT' || key === 'T') {
                 this.triggerTownPortal();
             }
         });
 
         window.addEventListener('keyup', e => {
-            const key = e.key.toUpperCase();
-            if (key === 'W' || key === 'A' || key === 'S' || key === 'D') {
-                this.keys[key] = false;
+            const code = e.code;
+            if (code === 'KeyW' || code === 'KeyA' || code === 'KeyS' || code === 'KeyD') {
+                this.keys[code[3]] = false; // 'W','A','S','D'
             }
         });
 
