@@ -791,7 +791,7 @@ class Player {
                 col = Math.floor(Date.now() / 180) % anim.frames;
             }
 
-            const drawH = 64;
+            const drawH = 80;
             const drawW = Math.round(drawH * frameW / anim.sh);
 
             ctx.save();
@@ -813,7 +813,7 @@ class Player {
                 frameW,
                 anim.sh,
                 screenX - drawW / 2,
-                screenY + 16 - drawH,
+                screenY + 32 - drawH,
                 drawW,
                 drawH
             );
