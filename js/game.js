@@ -771,28 +771,47 @@ class Player {
         const screenY = isoPos.y - isoCam.y + halfHeight;
 
         if (this.isLoaded && this.processedSheet) {
-            // hero.png is a labeled animation sheet (8 columns of 128px);
-            // source rects skip the baked-in label text above each band.
+            // hero.png is a labeled animation sheet. Idle/walk rows sit on a
+            // 128px grid, but the Attack 1 row is hand-spaced with weapon art
+            // bleeding past the grid, so its frames use explicit source rects:
+            // [srcX, srcW, anchorX] where anchorX is the knight body center.
             const frameW = this.spriteSheet.width / 8;
             const anims = {
                 idle:   { sy: 28,  sh: 124, frames: 6 },
                 walk:   { sy: 336, sh: 112, frames: 8 },
-                attack: { sy: 480, sh: 116, frames: 8 }
+                attack: { sy: 478, sh: 118, rects: [
+                    [5, 130, 44], [140, 118, 38], [261, 149, 45], [412, 112, 27],
+                    [526, 122, 35], [649, 121, 37], [771, 153, 41]
+                ] }
             };
             const anim = anims[this.state] || anims.idle;
+            const frameCount = anim.rects ? anim.rects.length : anim.frames;
 
             let col;
             if (this.state === 'walk') {
-                col = Math.floor(this.animTimer) % anim.frames;
+                col = Math.floor(this.animTimer) % frameCount;
             } else if (this.state === 'attack') {
                 const t = 1 - (this.attackTimer / this.attackDuration);
-                col = Math.floor(t * anim.frames) % anim.frames;
+                col = Math.floor(t * frameCount) % frameCount;
             } else {
-                col = Math.floor(Date.now() / 180) % anim.frames;
+                col = Math.floor(Date.now() / 180) % frameCount;
+            }
+
+            let sx, sw, anchorX;
+            if (anim.rects) {
+                const r = anim.rects.at(col);
+                sx = r.at(0);
+                sw = r.at(1);
+                anchorX = r.at(2);
+            } else {
+                sx = col * frameW;
+                sw = frameW;
+                anchorX = frameW / 2;
             }
 
             const drawH = 80;
-            const drawW = Math.round(drawH * frameW / anim.sh);
+            const scale = drawH / anim.sh;
+            const drawW = Math.round(sw * scale);
 
             ctx.save();
             ctx.fillStyle = 'rgba(0,0,0,0.35)';
@@ -808,11 +827,11 @@ class Player {
             }
             ctx.drawImage(
                 this.processedSheet,
-                col * frameW,
+                sx,
                 anim.sy,
-                frameW,
+                sw,
                 anim.sh,
-                screenX - drawW / 2,
+                Math.round(screenX - anchorX * scale),
                 screenY + 32 - drawH,
                 drawW,
                 drawH
