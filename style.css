@@ -626,6 +626,10 @@ canvas {
     border-radius: 1px;
 }
 
+.mana-potion-icon {
+    background: linear-gradient(180deg, #3a8fff 0%, #0033aa 100%);
+}
+
 .portal-icon {
     background: radial-gradient(circle, #ffffff 0%, #00ffff 35%, #0066cc 100%);
     border: 1px solid #00aaff;
@@ -721,6 +725,14 @@ canvas {
     top: 60px;
     right: 320px;
     width: 290px;
+    max-height: calc(100vh - 180px);
+}
+
+.shop-item-hint {
+    font-size: 10px;
+    color: #888;
+    text-align: center;
+    padding-top: 4px;
 }
 
 /* Shop Item Styling */

@@ -569,7 +569,10 @@ class Player {
         this.skillPoints = 0;
         this.skills = { fireball: 1 };
         this.fireballBonus = 0;
-        this.potions = [60, 60, 60, 60, 60];
+        // Belt potions store heal percentages (of max HP/MP) so healing
+        // keeps pace with level scaling
+        this.potions = [35, 35, 35, 35, 35];
+        this.manaPotions = [50, 50];
         this.gold = 100;
         this.kills = 0;
 
@@ -614,9 +617,20 @@ class Player {
 
     usePotion() {
         if (this.potions.length > 0 && this.hp < this.maxHp) {
-            const healVal = this.potions.pop();
+            const percent = this.potions.pop();
+            const healVal = Math.max(1, Math.floor(this.maxHp * percent / 100));
             this.hp = Math.min(this.maxHp, this.hp + healVal);
             return healVal;
+        }
+        return 0;
+    }
+
+    useManaPotion() {
+        if (this.manaPotions.length > 0 && this.mp < this.maxMp) {
+            const percent = this.manaPotions.pop();
+            const restoreVal = Math.max(1, Math.floor(this.maxMp * percent / 100));
+            this.mp = Math.min(this.maxMp, this.mp + restoreVal);
+            return restoreVal;
         }
         return 0;
     }
@@ -628,8 +642,8 @@ class Player {
         if (statType === 'atk') {
             this.baseAtk += 3;
         } else if (statType === 'maxhp') {
-            this.baseMaxHp += 20;
-            this.hp += 20;
+            this.baseMaxHp += 35;
+            this.hp += 35;
         } else if (statType === 'maxmp') {
             this.baseMaxMp += 10;
             this.mp += 10;
@@ -650,7 +664,7 @@ class Player {
             this.baseMaxMp += 10;
             this.hp = this.maxHp;
             this.mp = this.maxMp;
-            this.nextExp = Math.floor(this.nextExp * 1.5);
+            this.nextExp = Math.floor(this.nextExp * 1.35);
             leveledUp = true;
         }
         return leveledUp;
@@ -761,8 +775,9 @@ class Player {
             this.animTimer = 0;
         }
 
-        if (this.mp < this.maxMp && Math.random() < 0.02) {
-            this.mp = Math.min(this.maxMp, this.mp + 1);
+        // Mana regen scales with level so fireball cost growth stays usable
+        if (this.mp < this.maxMp) {
+            this.mp = Math.min(this.maxMp, this.mp + (1 + this.level * 0.1) / 60);
         }
     }
 
@@ -967,7 +982,8 @@ class Monster {
         this.direction = 0;
         
         this.attackCooldown = 0;
-        this.attackInterval = 60; 
+        this.attackInterval = 60;
+        this.windup = 0; // boss telegraph: frames remaining before the strike lands
 
         this.animTimer = Math.random() * 10;
         this.animSpeed = 0.1;
@@ -1001,7 +1017,7 @@ class Monster {
             this.hp = this.maxHp;
             this.atk = Math.floor(this.atk * 1.5 * (mod.atkMult || 1));
             this.speed *= (mod.speedMult || 1.15);
-            this.expValue = Math.floor(this.expValue * 2.5);
+            this.expValue = Math.floor(this.expValue * 3.5);
             this.goldMult = 3;
             this.scale = 1.2;
             this.auraColor = '#66aaff';
@@ -1010,7 +1026,7 @@ class Monster {
             this.name = '도살자';
             this.maxHp *= 10;
             this.hp = this.maxHp;
-            this.atk *= 2;
+            this.atk = Math.floor(this.atk * 1.5);
             this.speed = 1.1;
             this.expValue *= 10;
             this.goldMult = 10;
@@ -1035,6 +1051,16 @@ class Monster {
         const dy = player.y - this.y;
         const dist = Math.hypot(dx, dy);
 
+        // Boss strike telegraph: stand still during windup, then the hit
+        // only lands if the player is still inside the strike zone
+        if (this.windup > 0) {
+            this.windup--;
+            if (this.windup === 0 && dist <= 48) {
+                return this.atk;
+            }
+            return 0;
+        }
+
         const aggroRange = this.rank === 'boss' ? 100000 : 250;
         if (dist < aggroRange && dist > 15) {
             this.animTimer += this.animSpeed;
@@ -1055,6 +1081,10 @@ class Monster {
 
         if (dist <= (this.rank === 'boss' ? 36 : 24) && this.attackCooldown === 0) {
             this.attackCooldown = this.attackInterval;
+            if (this.rank === 'boss') {
+                this.windup = 30; // half-second tell before the swing connects
+                return 0;
+            }
             return this.atk;
         }
         return 0;
@@ -1118,6 +1148,22 @@ class Monster {
             ctx.beginPath();
             ctx.ellipse(screenX, screenY + 4, 16, 8, 0, 0, Math.PI * 2);
             ctx.fill();
+            ctx.restore();
+        }
+
+        // Boss windup warning: red strike-zone ring that tightens as the hit lands
+        if (this.windup > 0 && this.state !== 'death') {
+            ctx.save();
+            const progress = 1 - this.windup / 30;
+            // compensate for the rank scale transform so the ring matches
+            // the real strike radius (48 world units)
+            const ringR = (48 - progress * 16) / this.scale;
+            ctx.globalAlpha = 0.35 + progress * 0.4;
+            ctx.strokeStyle = '#ff2200';
+            ctx.lineWidth = 2 + progress * 2;
+            ctx.beginPath();
+            ctx.ellipse(screenX, screenY + 4, ringR, ringR / 2, 0, 0, Math.PI * 2);
+            ctx.stroke();
             ctx.restore();
         }
 
@@ -1518,8 +1564,25 @@ const ITEM_POOL = [
     { name: '강철 투구', type: 'armor', slot: 'helmet', stat: '+25 최대 HP', value: 25, rarity: 'normal', color: '#b0a89f', reqLevel: 1 },
     { name: '가죽 갑옷', type: 'armor', slot: 'chest', stat: '+15 최대 HP', value: 15, rarity: 'normal', color: '#b0a89f', reqLevel: 1 },
     { name: '대천사의 로브', type: 'armor', slot: 'chest', stat: '+50 최대 MP', value: 50, rarity: 'unique', color: '#ff5500', reqLevel: 18 },
-    { name: '체력 물약', type: 'potion', slot: 'potion', stat: '사용 시 체력 +60 회복', value: 60, rarity: 'normal', color: '#00ff00', reqLevel: 1 }
+    { name: '체력 물약', type: 'potion', slot: 'potion', stat: '사용 시 체력 35% 회복', value: 35, rarity: 'normal', color: '#00ff00', reqLevel: 1 },
+    { name: '마나 물약', type: 'potion', slot: 'potion', subtype: 'mana', stat: '사용 시 마나 50% 회복', value: 50, rarity: 'normal', color: '#3a8fff', reqLevel: 1 }
 ];
+
+// Shop stock: potion heal values are percentages of max HP/MP; prices are
+// base values that scale with player level (gold sink)
+const SHOP_ITEMS = [
+    { name: '소형 체력 물약', value: 25, basePrice: 15 },
+    { name: '하급 체력 물약', value: 35, basePrice: 30 },
+    { name: '일반 체력 물약', value: 50, basePrice: 60 },
+    { name: '대형 체력 물약', value: 70, basePrice: 125 },
+    { name: '하급 마나 물약', value: 40, basePrice: 25, subtype: 'mana' },
+    { name: '일반 마나 물약', value: 70, basePrice: 60, subtype: 'mana' }
+];
+const GAMBLE_BASE_PRICE = 150;
+
+function shopPriceFor(basePrice, playerLevel) {
+    return Math.floor(basePrice * (1 + 0.25 * (playerLevel - 1)));
+}
 
 const PREFIXES = [
     { name: '날카로운', slot: 'weapon', value: 3 },
@@ -1634,35 +1697,21 @@ class Game {
         const closeShopBtn = document.getElementById('close-shop-btn');
         closeShopBtn.addEventListener('click', () => shopPanel.classList.add('hidden'));
 
-        const shopItemsConfig = [
-            { name: '소형 체력 물약', value: 30, price: 15 },
-            { name: '하급 체력 물약', value: 60, price: 30 },
-            { name: '일반 체력 물약', value: 120, price: 60 },
-            { name: '대형 체력 물약', value: 250, price: 125 }
-        ];
-
         document.querySelectorAll('.buy-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
+            btn.addEventListener('click', () => {
                 sfx.init();
                 const idx = parseInt(btn.dataset.index);
-                const itemConfig = shopItemsConfig[idx];
+                const itemConfig = SHOP_ITEMS[idx];
                 if (!itemConfig) return;
 
-                if (this.player.gold < itemConfig.price) {
+                const price = shopPriceFor(itemConfig.basePrice, this.player.level);
+                if (this.player.gold < price) {
                     this.floaters.add(this.player.x, this.player.y - 15, "골드가 부족합니다!", "#ff3333");
                     sfx.playHit();
                     return;
                 }
 
-                // Find empty slot in inventory
-                let emptySlotIdx = -1;
-                for (let i = 0; i < this.inventory.length; i++) {
-                    if (this.inventory.at(i) === null) {
-                        emptySlotIdx = i;
-                        break;
-                    }
-                }
-
+                const emptySlotIdx = this.inventory.indexOf(null);
                 if (emptySlotIdx === -1) {
                     this.floaters.add(this.player.x, this.player.y - 15, "소지품 창이 가득 찼습니다!", "#ff3333");
                     sfx.playHit();
@@ -1670,26 +1719,53 @@ class Game {
                 }
 
                 // Deduct gold and add potion item
-                this.player.gold -= itemConfig.price;
+                this.player.gold -= price;
+                const isMana = itemConfig.subtype === 'mana';
                 const potionItem = {
                     name: itemConfig.name,
                     type: 'potion',
                     slot: 'potion',
-                    stat: `사용 시 체력 +${itemConfig.value} 회복`,
+                    subtype: itemConfig.subtype,
+                    stat: `사용 시 ${isMana ? '마나' : '체력'} ${itemConfig.value}% 회복`,
                     value: itemConfig.value,
                     rarity: 'normal',
-                    color: '#00ff00',
+                    color: isMana ? '#3a8fff' : '#00ff00',
                     reqLevel: 1
                 };
 
                 this.inventory[emptySlotIdx] = potionItem;
                 sfx.playPotion();
-                this.floaters.add(this.player.x, this.player.y - 15, `물약 구매! (-${itemConfig.price} G)`, "#ffd700");
+                this.floaters.add(this.player.x, this.player.y - 15, `물약 구매! (-${price} G)`, "#ffd700");
 
                 this.syncInventoryUI();
                 this.updateUI();
             });
         });
+
+        // Gambling: pay for an unidentified piece of gear (always magic or better)
+        const gambleBtn = document.getElementById('gamble-btn');
+        if (gambleBtn) {
+            gambleBtn.addEventListener('click', () => {
+                sfx.init();
+                const price = shopPriceFor(GAMBLE_BASE_PRICE, this.player.level);
+
+                if (this.player.gold < price) {
+                    this.floaters.add(this.player.x, this.player.y - 15, "골드가 부족합니다!", "#ff3333");
+                    sfx.playHit();
+                    return;
+                }
+                if (!this.inventory.includes(null)) {
+                    this.floaters.add(this.player.x, this.player.y - 15, "소지품 창이 가득 찼습니다!", "#ff3333");
+                    sfx.playHit();
+                    return;
+                }
+
+                this.player.gold -= price;
+                this.floaters.add(this.player.x, this.player.y - 15, `도박! (-${price} G)`, "#ffd700");
+                this.lootItem(this.player.level, true);
+                this.updateUI();
+            });
+        }
 
         document.getElementById('up-fireball').addEventListener('click', () => {
             if (this.player.addSkillPoint('fireball')) {
@@ -1731,6 +1807,10 @@ class Game {
 
         document.getElementById('slot-potion').addEventListener('click', () => {
             this.triggerPotion();
+        });
+
+        document.getElementById('slot-mana-potion').addEventListener('click', () => {
+            this.triggerManaPotion();
         });
 
         document.getElementById('slot-portal').addEventListener('click', () => {
@@ -1816,11 +1896,11 @@ class Game {
                     span.style.color = '#888';
                     span.style.fontSize = '10px';
                     if (item.slot === 'potion') {
-                        span.textContent = '(클릭: 벨트에 등록 | Shift+클릭: 파괴)';
+                        span.textContent = '(클릭: 벨트에 등록 | Shift+클릭: 파괴, 상점에선 판매)';
                     } else if (item.type === 'gem') {
-                        span.textContent = '(클릭: 보석 선택 → 소켓 장비 클릭으로 장착 | Shift+클릭: 파괴)';
+                        span.textContent = '(클릭: 보석 선택 → 소켓 장비 클릭으로 장착 | Shift+클릭: 파괴, 상점에선 판매)';
                     } else {
-                        span.textContent = item.equipped ? '(클릭: 장착 해제 | Shift+클릭: 파괴)' : '(클릭: 아이템 장착 | Shift+클릭: 파괴)';
+                        span.textContent = item.equipped ? '(클릭: 장착 해제 | Shift+클릭: 파괴, 상점에선 판매)' : '(클릭: 아이템 장착 | Shift+클릭: 파괴, 상점에선 판매)';
                     }
                     descArea.appendChild(span);
                 } else {
@@ -1840,8 +1920,18 @@ class Game {
                 sfx.init();
 
                 if (e.shiftKey) {
-                    // Shift + Click: Destroy item
-                    if (confirm(`'${item.name}'을(를) 파괴하시겠습니까?`)) {
+                    const shopOpen = !document.getElementById('shop-panel').classList.contains('hidden');
+                    if (shopOpen) {
+                        // Shift + Click while shop is open: sell for gold
+                        const rarityMult = { normal: 1, magic: 3, rare: 6, unique: 12 }[item.rarity] || 1;
+                        const sellPrice = Math.max(5, Math.floor((item.value || 0) * rarityMult));
+                        this.inventory[idx] = null;
+                        if (this.selectedGemIdx === idx) this.selectedGemIdx = null;
+                        this.player.gold += sellPrice;
+                        sfx.playPotion();
+                        this.floaters.add(this.player.x, this.player.y - 15, `판매 +${sellPrice} G`, "#ffd700");
+                    } else if (confirm(`'${item.name}'을(를) 파괴하시겠습니까?`)) {
+                        // Shift + Click: Destroy item
                         this.inventory[idx] = null;
                         if (this.selectedGemIdx === idx) this.selectedGemIdx = null;
                         sfx.playMonsterDeath();
@@ -1858,10 +1948,14 @@ class Game {
                             this.floaters.add(this.player.x, this.player.y - 15, "소켓이 있는 장비를 클릭하세요", item.color);
                         }
                     } else if (item.slot === 'potion') {
-                        this.player.potions.push(item.value);
+                        if (item.subtype === 'mana') {
+                            this.player.manaPotions.push(item.value);
+                        } else {
+                            this.player.potions.push(item.value);
+                        }
                         this.inventory[idx] = null;
                         sfx.playPotion();
-                        this.floaters.add(this.player.x, this.player.y - 15, `${item.name} 등록`, "#00ff00");
+                        this.floaters.add(this.player.x, this.player.y - 15, `${item.name} 등록`, item.subtype === 'mana' ? "#3a8fff" : "#00ff00");
                     } else if (this.selectedGemIdx !== null) {
                         // Socket the selected gem into this equipment
                         const gem = this.inventory.at(this.selectedGemIdx);
@@ -1966,6 +2060,8 @@ class Game {
                 if (this.isGameRunning) this.triggerFireballKey();
             } else if (code === 'KeyQ' || key === 'Q') {
                 this.triggerPotion();
+            } else if (code === 'KeyR' || key === 'R') {
+                this.triggerManaPotion();
             } else if (code === 'KeyI' || key === 'I') {
                 document.getElementById('inventory-panel').classList.toggle('hidden');
             } else if (code === 'KeyC' || key === 'C') {
@@ -2019,6 +2115,15 @@ class Game {
         if (healed > 0) {
             sfx.playPotion();
             this.floaters.add(this.player.x, this.player.y - 15, `+${healed} HP`, "#00ff00");
+            this.updateUI();
+        }
+    }
+
+    triggerManaPotion() {
+        const restored = this.player.useManaPotion();
+        if (restored > 0) {
+            sfx.playPotion();
+            this.floaters.add(this.player.x, this.player.y - 15, `+${restored} MP`, "#3a8fff");
             this.updateUI();
         }
     }
@@ -2346,7 +2451,8 @@ class Game {
                 } else if (item.slot === 'chest') {
                     slot.innerHTML = `<div style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 24px;">🧥</div>`;
                 } else if (item.slot === 'potion') {
-                    slot.innerHTML = `<div style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 24px;">🧪</div>`;
+                    const manaGlow = item.subtype === 'mana' ? ' filter: drop-shadow(0 0 4px #3a8fff);' : '';
+                    slot.innerHTML = `<div style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 24px;${manaGlow}">🧪</div>`;
                 } else if (item.type === 'gem') {
                     slot.innerHTML = `<div style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 24px; filter: drop-shadow(0 0 4px ${item.color});">💎</div>`;
                 }
@@ -2413,7 +2519,8 @@ class Game {
                 itemTemplate = uniques.at(Math.floor(Math.random() * uniques.length));
             }
         } else {
-            const normals = ITEM_POOL.filter(i => i.rarity === 'normal');
+            // Boosted rolls (boss drops, gambling) always yield equipment, not potions
+            const normals = ITEM_POOL.filter(i => i.rarity === 'normal' && (!boosted || i.slot !== 'potion'));
             if (normals.length > 0) {
                 itemTemplate = normals.at(Math.floor(Math.random() * normals.length));
             }
@@ -2591,6 +2698,7 @@ class Game {
 
         document.getElementById('hud-level').textContent = this.player.level.toString();
         document.getElementById('potion-count').textContent = this.player.potions.length.toString();
+        document.getElementById('mana-potion-count').textContent = this.player.manaPotions.length.toString();
 
         const goldEl = document.getElementById('stat-gold');
         if (goldEl) {
@@ -2598,13 +2706,21 @@ class Game {
         }
 
         const buyButtons = document.querySelectorAll('.buy-btn');
-        const shopPrices = [15, 30, 60, 125];
         const isInvFull = !this.inventory.includes(null);
         buyButtons.forEach(btn => {
-            const btnIdx = parseInt(btn.dataset.index);
-            const price = shopPrices[btnIdx] || 0;
+            const itemConfig = SHOP_ITEMS[parseInt(btn.dataset.index)];
+            if (!itemConfig) return;
+            const price = shopPriceFor(itemConfig.basePrice, this.player.level);
+            btn.textContent = `구매 (${price}G)`;
             btn.disabled = (this.player.gold < price || isInvFull);
         });
+
+        const gambleBtn = document.getElementById('gamble-btn');
+        if (gambleBtn) {
+            const gamblePrice = shopPriceFor(GAMBLE_BASE_PRICE, this.player.level);
+            gambleBtn.textContent = `도박 (${gamblePrice}G)`;
+            gambleBtn.disabled = (this.player.gold < gamblePrice || isInvFull);
+        }
 
         document.getElementById('stat-level').textContent = this.player.level.toString();
         document.getElementById('stat-atk').textContent = this.player.atk.toString();
