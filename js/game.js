@@ -599,6 +599,81 @@ class TileMap {
         return this.grid[r][c] === 1;
     }
 
+    // A* over tiles (8-direction, diagonals can't cut wall corners).
+    // Returns tile-center world waypoints excluding the start tile,
+    // or null when the destination is unreachable.
+    findPath(startX, startY, endX, endY) {
+        const ts = this.tileSize;
+        const sc = Math.floor(startX / ts);
+        const sr = Math.floor(startY / ts);
+        const ec = Math.floor(endX / ts);
+        const er = Math.floor(endY / ts);
+        if (sr < 0 || sr >= this.rows || sc < 0 || sc >= this.cols) return null;
+        if (er < 0 || er >= this.rows || ec < 0 || ec >= this.cols) return null;
+        if (this.grid[er][ec] === 1) return null;
+        if (sr === er && sc === ec) return [];
+
+        const idx = (r, c) => r * this.cols + c;
+        const startIdx = idx(sr, sc);
+        const gScore = new Float64Array(this.rows * this.cols).fill(Infinity);
+        const cameFrom = new Int32Array(this.rows * this.cols).fill(-1);
+        const closed = new Uint8Array(this.rows * this.cols);
+        const open = [{ r: sr, c: sc, f: 0 }];
+        gScore[startIdx] = 0;
+
+        const DIRS = [
+            [-1, 0, 1], [1, 0, 1], [0, -1, 1], [0, 1, 1],
+            [-1, -1, Math.SQRT2], [-1, 1, Math.SQRT2],
+            [1, -1, Math.SQRT2], [1, 1, Math.SQRT2]
+        ];
+
+        let iterations = 0;
+        const maxIterations = this.rows * this.cols;
+        while (open.length > 0 && iterations++ < maxIterations) {
+            // grid is small, so a linear scan for the lowest f is fine
+            let best = 0;
+            for (let i = 1; i < open.length; i++) {
+                if (open[i].f < open[best].f) best = i;
+            }
+            const cur = open.splice(best, 1)[0];
+            const ci = idx(cur.r, cur.c);
+            if (closed[ci]) continue;
+            closed[ci] = 1;
+
+            if (cur.r === er && cur.c === ec) {
+                const path = [];
+                let walk = ci;
+                while (walk !== -1 && walk !== startIdx) {
+                    const wr = Math.floor(walk / this.cols);
+                    const wc = walk % this.cols;
+                    path.push(this.tileToWorld(wc, wr));
+                    walk = cameFrom[walk];
+                }
+                return path.reverse();
+            }
+
+            for (const [dr, dc, cost] of DIRS) {
+                const nr = cur.r + dr;
+                const nc = cur.c + dc;
+                if (nr < 0 || nr >= this.rows || nc < 0 || nc >= this.cols) continue;
+                if (this.grid[nr][nc] === 1) continue;
+                if (dr !== 0 && dc !== 0 &&
+                    (this.grid[cur.r + dr][cur.c] === 1 || this.grid[cur.r][cur.c + dc] === 1)) {
+                    continue;
+                }
+                const ni = idx(nr, nc);
+                if (closed[ni]) continue;
+                const g = gScore[ci] + cost;
+                if (g < gScore[ni]) {
+                    gScore[ni] = g;
+                    cameFrom[ni] = ci;
+                    open.push({ r: nr, c: nc, f: g + Math.hypot(nr - er, nc - ec) });
+                }
+            }
+        }
+        return null;
+    }
+
     render(ctx, camera, viewWidth, viewHeight) {
         const isoCam = camera.getIsoOffset();
         const halfWidth = viewWidth / 2;
@@ -806,7 +881,8 @@ class Player {
 
         this.state = 'idle';
         this.direction = 0;
-        
+        this.path = []; // queued A* waypoints after the current target
+
         this.animTimer = 0;
         this.animSpeed = 0.15;
         // Sheets in /assets ship with pre-keyed transparent backgrounds,
@@ -831,8 +907,18 @@ class Player {
 
     moveTo(tx, ty) {
         if (this.state === 'attack') return;
+        this.path = [];
         this.targetX = tx;
         this.targetY = ty;
+    }
+
+    // Follow A* waypoints: head to the first point, queue the rest
+    setPath(points) {
+        if (this.state === 'attack') return;
+        if (!points || points.length === 0) return;
+        this.targetX = points[0].x;
+        this.targetY = points[0].y;
+        this.path = points.slice(1);
     }
 
     meleeAttack() {
@@ -998,6 +1084,11 @@ class Player {
             } else {
                 this.targetY = this.y;
             }
+        } else if (this.path.length > 0) {
+            // reached the current waypoint; advance along the path
+            const next = this.path.shift();
+            this.targetX = next.x;
+            this.targetY = next.y;
         } else {
             this.state = 'idle';
             this.animTimer = 0;
@@ -2197,7 +2288,7 @@ const GEM_TYPES = [
     { name: '에메랄드', color: '#2ecc71', effect: { atk: 5 }, stat: '소켓 장착 시: +5 공격력' }
 ];
 
-const BOSS_KILL_INTERVAL = 50;
+const BOSS_FLOOR_INTERVAL = 3; // every 3rd floor is a boss floor
 
 class Game {
     constructor() {
@@ -2237,7 +2328,7 @@ class Game {
         this.inventory = new Array(16).fill(null);
         this.mouse = { x: 0, y: 0, isDown: false, button: -1 };
         this.zoom = 1.6;
-        this.nextBossKills = BOSS_KILL_INTERVAL;
+        this.stairsMsgCooldown = 0;
         this.selectedGemIdx = null;
         this.keys = {};
         this.movingByKeys = false;
@@ -2633,7 +2724,7 @@ class Game {
 
             if (this.mouse.isDown && this.mouse.button === 0 && this.player.state !== 'attack') {
                 const cartDest = this.screenToCartesian(this.mouse.x, this.mouse.y);
-                this.player.moveTo(cartDest.x, cartDest.y);
+                this.moveTowards(cartDest.x, cartDest.y);
             }
         });
 
@@ -2707,6 +2798,48 @@ class Game {
         }
     }
 
+    // Click movement: walk straight when the line is clear, otherwise follow
+    // A* waypoints smoothed by line-of-sight string pulling
+    moveTowards(tx, ty) {
+        if (this.hasLineOfSight(this.player.x, this.player.y, tx, ty)) {
+            this.player.moveTo(tx, ty);
+            return;
+        }
+
+        const path = this.map.findPath(this.player.x, this.player.y, tx, ty);
+        if (!path || path.length === 0) {
+            this.player.moveTo(tx, ty);
+            return;
+        }
+        if (!this.map.isSolid(tx, ty)) {
+            path.push({ x: tx, y: ty });
+        }
+
+        const smoothed = [];
+        let anchor = { x: this.player.x, y: this.player.y };
+        for (let i = 0; i < path.length; i++) {
+            const isLast = i === path.length - 1;
+            if (!isLast && this.hasLineOfSight(anchor.x, anchor.y, path[i + 1].x, path[i + 1].y)) {
+                continue; // this waypoint can be skipped entirely
+            }
+            smoothed.push(path[i]);
+            anchor = path[i];
+        }
+        this.player.setPath(smoothed);
+    }
+
+    hasLineOfSight(x0, y0, x1, y1) {
+        const dist = Math.hypot(x1 - x0, y1 - y0);
+        const steps = Math.ceil(dist / 12);
+        for (let i = 1; i <= steps; i++) {
+            const t = i / steps;
+            if (this.map.isSolid(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     triggerPotion() {
         const healed = this.player.usePotion();
         if (healed > 0) {
@@ -2745,7 +2878,7 @@ class Game {
                         sfx.playPotion();
                     }
                 } else {
-                    this.player.moveTo(this.npc.x, this.npc.y);
+                    this.moveTowards(this.npc.x, this.npc.y);
                     this.floaters.add(this.player.x, this.player.y - 15, "아카라에게 다가갑니다...", "#aaaaaa");
                 }
                 return;
@@ -2773,10 +2906,10 @@ class Game {
             if (dist <= this.player.attackRange) {
                 this.attackMonster(clickedMonster);
             } else {
-                this.player.moveTo(clickedMonster.x, clickedMonster.y);
+                this.moveTowards(clickedMonster.x, clickedMonster.y);
             }
         } else {
-            this.player.moveTo(cartDest.x, cartDest.y);
+            this.moveTowards(cartDest.x, cartDest.y);
         }
     }
 
@@ -3174,6 +3307,13 @@ class Game {
         sfx.playBossSpawn();
         this.floaters.add(this.player.x, this.player.y - 20, `지하 ${this.floor}층`, '#ffcc44');
         this.spawnInitialMonsters();
+
+        // Boss floors: the Butcher rules this floor and seals the stairs
+        if (this.floor % BOSS_FLOOR_INTERVAL === 0) {
+            this.spawnBoss();
+            this.floaters.add(this.player.x, this.player.y - 50, "도살자를 처치하기 전엔 내려갈 수 없습니다!", '#ff5555');
+        }
+
         this.updateUI();
     }
 
@@ -3225,7 +3365,10 @@ class Game {
             const stairs = map.stairsPoint;
             const sc = Math.floor(stairs.x / map.tileSize);
             const sr = Math.floor(stairs.y / map.tileSize);
-            if (map.explored[sr] && map.explored[sr][sc]) dot(stairs.x, stairs.y, '#ffcc44', 5);
+            if (map.explored[sr] && map.explored[sr][sc]) {
+                const sealed = this.monsters.some(m => m.rank === 'boss' && m.state !== 'death');
+                dot(stairs.x, stairs.y, sealed ? '#ff4444' : '#ffcc44', 5);
+            }
 
             if (this.dungeonPortal) dot(this.dungeonPortal.x, this.dungeonPortal.y, '#00ffff', 4);
 
@@ -3332,10 +3475,8 @@ class Game {
             this.lootGem();
         }
 
-        // Only advance the milestone once a boss actually spawns, so the
-        // summon isn't lost when a previous boss is still alive
-        if (this.player.kills >= this.nextBossKills && this.spawnBoss()) {
-            this.nextBossKills += BOSS_KILL_INTERVAL;
+        if (monster.rank === 'boss') {
+            this.floaters.add(this.player.x, this.player.y - 30, "계단의 봉인이 풀렸습니다!", '#ffcc44');
         }
     }
 
@@ -3762,10 +3903,21 @@ class Game {
         }
 
         if (this.currentMap === 'dungeon') {
-            // Walking onto the stairs descends to a fresh, deeper floor
+            // Walking onto the stairs descends to a fresh, deeper floor;
+            // on boss floors the stairs stay sealed until the boss is dead
+            if (this.stairsMsgCooldown > 0) this.stairsMsgCooldown--;
             const stairs = this.map.stairsPoint;
             if (stairs && Math.hypot(this.player.x - stairs.x, this.player.y - stairs.y) < 26) {
-                this.descendStairs();
+                const bossAlive = this.monsters.some(m => m.rank === 'boss' && m.state !== 'death');
+                if (bossAlive) {
+                    if (this.stairsMsgCooldown <= 0) {
+                        this.stairsMsgCooldown = 90;
+                        sfx.playHit();
+                        this.floaters.add(this.player.x, this.player.y - 20, "도살자가 살아있는 동안 계단이 봉인되어 있습니다!", '#ff5555');
+                    }
+                } else {
+                    this.descendStairs();
+                }
             }
 
             this.spawnTimer++;
