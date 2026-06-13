@@ -295,6 +295,23 @@ canvas {
     background-size: cover;
     background-position: center;
     background-repeat: no-repeat;
+    cursor: grab;
+}
+
+/* Inner emoji/badge must not steal drag or click events from the slot */
+.inv-slot > div,
+.inv-slot > span {
+    pointer-events: none;
+}
+
+/* Drag-and-drop feedback */
+.inv-slot.dragging {
+    opacity: 0.4;
+    cursor: grabbing;
+}
+.inv-slot.drag-over {
+    border-color: var(--border-gold);
+    box-shadow: 0 0 10px var(--border-gold), inset 0 0 8px rgba(212, 175, 55, 0.3);
 }
 
 .inv-slot .item-quantity {

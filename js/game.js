@@ -2775,6 +2775,7 @@ class Game {
         this.stairsMsgCooldown = 0;
         this.altarMsgCooldown = 0;
         this.selectedGemIdx = null;
+        this.dragSrcIdx = null; // source slot index during an inventory drag
         this.keys = {};
         this.movingByKeys = false;
         this.unlockedClasses = loadUnlockedClasses();
@@ -3055,6 +3056,53 @@ class Game {
 
             slot.addEventListener('mouseleave', () => {
                 descArea.textContent = '슬롯 위의 아이템 정보를 보려면 마우스를 올리세요.';
+            });
+
+            // Drag-and-drop to reorder/swap items between slots. A real drag
+            // doesn't emit a click, so the equip/use click handler is untouched.
+            slot.addEventListener('dragstart', (e) => {
+                const idx = parseInt(slot.dataset.slot);
+                if (!this.inventory.at(idx)) { e.preventDefault(); return; }
+                this.dragSrcIdx = idx;
+                slot.classList.add('dragging');
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', String(idx)); // Firefox needs payload
+            });
+
+            slot.addEventListener('dragover', (e) => {
+                if (this.dragSrcIdx === null || this.dragSrcIdx === undefined) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                if (parseInt(slot.dataset.slot) !== this.dragSrcIdx) slot.classList.add('drag-over');
+            });
+
+            slot.addEventListener('dragleave', () => slot.classList.remove('drag-over'));
+
+            slot.addEventListener('drop', (e) => {
+                e.preventDefault();
+                slot.classList.remove('drag-over');
+                const src = this.dragSrcIdx;
+                const dst = parseInt(slot.dataset.slot);
+                if (src === null || src === undefined || src === dst) return;
+
+                // Swap (moving onto an empty slot leaves the source empty)
+                const tmp = this.inventory[dst];
+                this.inventory[dst] = this.inventory[src];
+                this.inventory[src] = tmp;
+
+                // Keep the selected-gem highlight pointing at the same item
+                if (this.selectedGemIdx === src) this.selectedGemIdx = dst;
+                else if (this.selectedGemIdx === dst) this.selectedGemIdx = src;
+
+                sfx.init();
+                this.syncInventoryUI();
+                this.updateUI();
+            });
+
+            slot.addEventListener('dragend', () => {
+                slot.classList.remove('dragging');
+                document.querySelectorAll('.inv-slot.drag-over').forEach(s => s.classList.remove('drag-over'));
+                this.dragSrcIdx = null;
             });
 
             slot.addEventListener('click', (e) => {
@@ -4188,6 +4236,7 @@ class Game {
         const slots = document.querySelectorAll('.inv-slot');
         slots.forEach((slot, i) => {
             const item = this.inventory.at(i);
+            slot.draggable = !!item; // only occupied slots can be dragged
             if (item) {
                 slot.classList.add('occupied');
                 if (item.slot === 'weapon') {
