@@ -1295,12 +1295,13 @@ class Player {
 // 5. SKELETON MONSTER & COMBAT SYSTEM
 // ==========================================
 class Monster {
-    constructor(x, y, level = 1, rank = 'normal') {
+    constructor(x, y, level = 1, rank = 'normal', kind = 'skeleton') {
         this.x = x;
         this.y = y;
         this.radius = 14;
-        
+
         this.level = level;
+        this.kind = kind; // skeleton | necromancer | zombie | slime
         const monsterScale = 1 + (level - 1) * 0.25;
         this.maxHp = Math.floor((30 + level * 10) * monsterScale);
         this.hp = this.maxHp;
@@ -1308,14 +1309,18 @@ class Monster {
         this.speed = 1.2 + Math.random() * 0.4;
         this.expValue = Math.floor((20 + level * 5) * monsterScale);
 
-        this.state = 'walk'; 
-        this.deathTimer = 40; 
+        this.state = 'walk';
+        this.deathTimer = 40;
         this.direction = 0;
-        
+
         this.attackCooldown = 0;
         this.attackInterval = 60;
         this.windup = 0; // boss telegraph: frames remaining before the strike lands
         this.slowTimer = 0; // frost effect: halves movement while > 0
+        this.dashTimer = 0;      // zombie: frames left in a lunge
+        this.dashCooldown = 90;  // zombie: frames until next lunge
+        this.splitGen = 0;       // slime: split generation (caps recursion)
+        this.bodyColor = '#b0a89f';
 
         this.animTimer = Math.random() * 10;
         this.animSpeed = 0.1;
@@ -1335,6 +1340,36 @@ class Monster {
         this.scale = 1;
         this.goldMult = 1;
         this.auraColor = null;
+
+        // Per-kind behaviour and stat tweaks (applied before rank multipliers)
+        if (kind === 'necromancer') {
+            this.bodyColor = '#9b6bd6';
+            this.kindName = '사령술사';
+            this.kindAura = '#9b6bd6';
+            this.maxHp = Math.floor(this.maxHp * 0.8);
+            this.hp = this.maxHp;
+            this.attackInterval = 110; // fires a bolt instead of melee
+            this.expValue = Math.floor(this.expValue * 1.3);
+            this.resists.fire = 0.2;
+        } else if (kind === 'zombie') {
+            this.bodyColor = '#6f8f5a';
+            this.kindName = '좀비';
+            this.kindAura = '#6f8f5a';
+            this.maxHp = Math.floor(this.maxHp * 1.6);
+            this.hp = this.maxHp;
+            this.speed *= 0.7; // slow, but lunges
+            this.atk = Math.floor(this.atk * 1.2);
+            this.expValue = Math.floor(this.expValue * 1.4);
+        } else if (kind === 'slime') {
+            this.bodyColor = '#3fb86e';
+            this.kindName = '슬라임';
+            this.kindAura = '#3fb86e';
+            this.radius = 12;
+            this.maxHp = Math.floor(this.maxHp * 0.7);
+            this.hp = this.maxHp;
+            this.atk = Math.floor(this.atk * 0.8);
+            this.resists.physical = 0.2;
+        }
 
         if (rank === 'champion') {
             const mods = [
@@ -1396,11 +1431,49 @@ class Monster {
         }
 
         const aggroRange = this.rank === 'boss' ? 100000 : 250;
+
+        // Necromancer: kite to keep range, then fire a bolt
+        if (this.kind === 'necromancer') {
+            if (dist < aggroRange) {
+                this.animTimer += this.animSpeed;
+                const preferred = 170;
+                let move = 0;
+                if (dist > preferred + 40) move = moveSpeed;        // close in
+                else if (dist < preferred - 40) move = -moveSpeed;  // back away
+                if (move !== 0 && dist > 0) {
+                    const vx = (dx / dist) * move;
+                    const vy = (dy / dist) * move;
+                    if (!map.isSolid(this.x + vx, this.y)) this.x += vx;
+                    if (!map.isSolid(this.x, this.y + vy)) this.y += vy;
+                }
+                let angle = Math.atan2(dy, dx);
+                if (angle < 0) angle += Math.PI * 2;
+                this.direction = Math.round(angle / (Math.PI / 4)) % 8;
+
+                if (dist < 340 && this.attackCooldown === 0) {
+                    this.attackCooldown = this.attackInterval;
+                    this.pendingShot = { tx: player.x, ty: player.y, dmg: this.atk };
+                }
+            }
+            return 0;
+        }
+
+        // Zombie: slow shuffle, but lunges in periodic bursts
+        if (this.kind === 'zombie') {
+            if (this.dashTimer > 0) this.dashTimer--;
+            else if (this.dashCooldown > 0) this.dashCooldown--;
+            if (this.dashCooldown === 0 && dist < 220 && dist > 30) {
+                this.dashTimer = 18;
+                this.dashCooldown = 150;
+            }
+        }
+        const kindSpeed = (this.kind === 'zombie' && this.dashTimer > 0) ? moveSpeed * 3.2 : moveSpeed;
+
         if (dist < aggroRange && dist > 15) {
             this.animTimer += this.animSpeed;
-            
-            const vx = (dx / dist) * moveSpeed;
-            const vy = (dy / dist) * moveSpeed;
+
+            const vx = (dx / dist) * kindSpeed;
+            const vy = (dy / dist) * kindSpeed;
 
             let angle = Math.atan2(vy, vx);
             if (angle < 0) angle += Math.PI * 2;
@@ -1479,12 +1552,15 @@ class Monster {
             ctx.translate(-screenX, -screenY);
         }
 
-        if (this.auraColor && this.state !== 'death') {
+        // Rank aura (champion/boss) takes priority; otherwise a softer kind tint
+        const aura = this.auraColor || (this.kind !== 'skeleton' ? this.kindAura : null);
+        if (aura && this.state !== 'death') {
             ctx.save();
-            ctx.globalAlpha = 0.3 + Math.sin(Date.now() * 0.006) * 0.1;
-            ctx.shadowBlur = 14;
-            ctx.shadowColor = this.auraColor;
-            ctx.fillStyle = this.auraColor;
+            const strong = !!this.auraColor;
+            ctx.globalAlpha = (strong ? 0.3 : 0.18) + Math.sin(Date.now() * 0.006) * 0.08;
+            ctx.shadowBlur = strong ? 14 : 9;
+            ctx.shadowColor = aura;
+            ctx.fillStyle = aura;
             ctx.beginPath();
             ctx.ellipse(screenX, screenY + 4, 16, 8, 0, 0, Math.PI * 2);
             ctx.fill();
@@ -1525,7 +1601,34 @@ class Monster {
             ctx.restore();
         }
 
-        if (this.isLoaded && this.processedSheet) {
+        if (this.kind === 'slime') {
+            // Procedural gelatinous blob (no sprite); wobbles as it moves
+            const wob = Math.sin(this.animTimer * 1.5) * 2;
+            const bw = 16 + wob;
+            const bh = 13 - wob * 0.5;
+            ctx.save();
+            ctx.shadowBlur = 8;
+            ctx.shadowColor = this.bodyColor;
+            const grad = ctx.createRadialGradient(screenX - 4, screenY - 8, 2, screenX, screenY - 4, bw);
+            grad.addColorStop(0, '#d7ffe6');
+            grad.addColorStop(0.4, this.bodyColor);
+            grad.addColorStop(1, '#1c6b3c');
+            ctx.fillStyle = grad;
+            ctx.globalAlpha = this.state === 'death' ? Math.max(0, this.deathTimer / 40) : 0.92;
+            ctx.beginPath();
+            ctx.ellipse(screenX, screenY - 4, bw, bh, 0, 0, Math.PI * 2);
+            ctx.fill();
+            // eyes
+            if (this.state !== 'death') {
+                ctx.globalAlpha = 1;
+                ctx.fillStyle = '#11321f';
+                ctx.beginPath();
+                ctx.arc(screenX - 4, screenY - 6, 1.8, 0, Math.PI * 2);
+                ctx.arc(screenX + 4, screenY - 6, 1.8, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            ctx.restore();
+        } else if (this.isLoaded && this.processedSheet) {
             // skeleton.png is a labeled animation sheet (8 columns of 128px);
             // walk uses cols 0-3 of the Walk/Run band, death plays its own band.
             const frameW = this.spriteSheet.width / 8;
@@ -1614,13 +1717,15 @@ class Monster {
             ctx.fillRect(screenX - barW / 2, screenY - 26, barW * (this.hp / this.maxHp), barH);
         }
 
-        if (this.name && this.state !== 'death') {
-            ctx.fillStyle = this.auraColor || '#ffffff';
-            ctx.font = 'bold 11px sans-serif';
+        // Named ranks (champion/boss) label brightly; plain kinds get a subtle tag
+        const label = this.name || (this.kind !== 'skeleton' ? this.kindName : '');
+        if (label && this.state !== 'death') {
+            ctx.fillStyle = this.auraColor || this.kindAura || '#ffffff';
+            ctx.font = this.name ? 'bold 11px sans-serif' : '10px sans-serif';
             ctx.textAlign = 'center';
             ctx.shadowColor = '#000000';
             ctx.shadowBlur = 4;
-            ctx.fillText(this.name, screenX, screenY - 32);
+            ctx.fillText(label, screenX, screenY - 32);
         }
 
         ctx.restore();
@@ -1695,6 +1800,49 @@ class Projectile {
         ctx.arc(trailX, trailY, this.radius * 0.75, 0, Math.PI * 2);
         ctx.fill();
 
+        ctx.restore();
+    }
+}
+
+// Necromancer bolt: travels toward the player and is checked against the
+// player (not monsters) in the game loop.
+class EnemyProjectile {
+    constructor(x, y, tx, ty, damage) {
+        this.x = x;
+        this.y = y;
+        this.radius = 7;
+        this.damage = damage;
+        this.life = 110;
+        const dx = tx - x;
+        const dy = ty - y;
+        const dist = Math.hypot(dx, dy) || 1;
+        const speed = 4.2;
+        this.vx = (dx / dist) * speed;
+        this.vy = (dy / dist) * speed;
+    }
+
+    update(map) {
+        this.x += this.vx;
+        this.y += this.vy;
+        this.life--;
+        if (map.isSolid(this.x, this.y)) this.life = 0;
+    }
+
+    render(ctx, camera, viewWidth, viewHeight) {
+        const isoCam = camera.getIsoOffset();
+        const screenX = (this.x - this.y) - isoCam.x + viewWidth / 2;
+        const screenY = (this.x + this.y) * 0.5 - isoCam.y + viewHeight / 2;
+        ctx.save();
+        ctx.shadowBlur = 12;
+        ctx.shadowColor = '#a64dff';
+        const grad = ctx.createRadialGradient(screenX, screenY, 1, screenX, screenY, this.radius + 3);
+        grad.addColorStop(0, '#e6ccff');
+        grad.addColorStop(0.5, '#9b30ff');
+        grad.addColorStop(1, 'transparent');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(screenX, screenY, this.radius + 3, 0, Math.PI * 2);
+        ctx.fill();
         ctx.restore();
     }
 }
@@ -2378,6 +2526,7 @@ class Game {
 
         this.monsters = [];
         this.projectiles = [];
+        this.enemyProjectiles = []; // necromancer bolts aimed at the player
         this.effects = []; // transient visual FX (lightning arcs, whirlwind rings)
         this.dungeonPortal = null;
         this.townPortal = null;
@@ -3425,6 +3574,7 @@ class Game {
         this.map = this.dungeonMap;
         this.monsters = [];
         this.projectiles = [];
+        this.enemyProjectiles = [];
         this.effects = [];
         this.dungeonPortal = null;
         this.townPortal = null;
@@ -3557,7 +3707,16 @@ class Game {
         // fixed-danger place and descending is the risk/reward decision
         const mLvl = this.floor * 2 - 1 + Math.floor(Math.random() * 2);
         const rank = Math.random() < 0.10 ? 'champion' : 'normal';
-        this.monsters.push(new Monster(rx, ry, mLvl, rank));
+        this.monsters.push(new Monster(rx, ry, mLvl, rank, this.pickMonsterKind()));
+    }
+
+    // Deeper floors unlock new monster kinds and weight them more heavily
+    pickMonsterKind() {
+        const roll = Math.random();
+        if (this.floor >= 2 && roll < 0.18) return 'slime';
+        if (this.floor >= 3 && roll < 0.38) return 'zombie';
+        if (this.floor >= 4 && roll < 0.55) return 'necromancer';
+        return 'skeleton';
     }
 
     spawnBoss() {
@@ -3611,6 +3770,29 @@ class Game {
 
         if (monster.rank === 'boss') {
             this.floaters.add(this.player.x, this.player.y - 30, "계단의 봉인이 풀렸습니다!", '#ffcc44');
+        }
+
+        // Slimes split into two smaller slimes on death (one generation only)
+        if (monster.kind === 'slime' && monster.splitGen < 1 && this.monsters.length < MAX_MONSTERS + 4) {
+            for (let i = 0; i < 2; i++) {
+                const ang = Math.random() * Math.PI * 2;
+                const child = new Monster(
+                    monster.x + Math.cos(ang) * 18,
+                    monster.y + Math.sin(ang) * 18,
+                    Math.max(1, monster.level - 1),
+                    'normal',
+                    'slime'
+                );
+                child.splitGen = monster.splitGen + 1;
+                child.scale = 0.65;
+                child.radius = 8;
+                child.maxHp = Math.max(1, Math.floor(monster.maxHp * 0.35));
+                child.hp = child.maxHp;
+                child.expValue = Math.floor(monster.expValue * 0.3);
+                child.goldMult = 0;
+                this.monsters.push(child);
+            }
+            this.floaters.add(monster.x, monster.y - 20, "분열!", '#3fb86e');
         }
     }
 
@@ -4047,6 +4229,22 @@ class Game {
         }
     }
 
+    // Applies incoming damage to the player and handles the death/reset flow
+    damagePlayer(amount) {
+        if (this.player.hp <= 0) return;
+        this.player.hp = Math.max(0, this.player.hp - amount);
+        this.floaters.add(this.player.x, this.player.y - 12, `-${amount}`, '#ff3333');
+        sfx.playHit();
+        this.updateUI();
+
+        if (this.player.hp <= 0) {
+            this.floaters.add(this.player.x, this.player.y - 15, "사망!", "#ff0000");
+            this.isGameRunning = false;
+            alert("사망하셨습니다! 확인을 누르면 재시작합니다.");
+            window.location.reload();
+        }
+    }
+
     resize() {
         this.canvas.width = window.innerWidth;
         this.canvas.height = window.innerHeight;
@@ -4185,23 +4383,36 @@ class Game {
                 const m = this.monsters.at(i);
                 const dmgToPlayer = m.update(this.player, this.map);
 
-                if (dmgToPlayer > 0 && this.player.hp > 0) {
-                    this.player.hp = Math.max(0, this.player.hp - dmgToPlayer);
-                    this.floaters.add(this.player.x, this.player.y - 12, `-${dmgToPlayer}`, '#ff3333');
-                    sfx.playHit(); 
-                    this.updateUI();
+                if (dmgToPlayer > 0) {
+                    this.damagePlayer(dmgToPlayer);
+                    if (!this.isGameRunning) return;
+                }
 
-                    if (this.player.hp <= 0) {
-                        this.floaters.add(this.player.x, this.player.y - 15, "사망!", "#ff0000");
-                        this.isGameRunning = false;
-                        alert("사망하셨습니다! 확인을 누르면 재시작합니다.");
-                        window.location.reload();
-                    }
+                // Necromancer queued a ranged bolt this frame
+                if (m.pendingShot) {
+                    this.enemyProjectiles.push(new EnemyProjectile(
+                        m.x, m.y, m.pendingShot.tx, m.pendingShot.ty, m.pendingShot.dmg
+                    ));
+                    sfx.playFireball();
+                    m.pendingShot = null;
                 }
 
                 if (m.state === 'death' && m.deathTimer <= 0) {
                     this.monsters.splice(i, 1);
                 }
+            }
+
+            // Necromancer bolts travel and hit the player
+            for (let i = this.enemyProjectiles.length - 1; i >= 0; i--) {
+                const ep = this.enemyProjectiles.at(i);
+                ep.update(this.map);
+                let consumed = ep.life <= 0;
+                if (Math.hypot(ep.x - this.player.x, ep.y - this.player.y) < ep.radius + this.player.radius) {
+                    this.damagePlayer(ep.damage);
+                    if (!this.isGameRunning) return;
+                    consumed = true;
+                }
+                if (consumed) this.enemyProjectiles.splice(i, 1);
             }
         }
 
@@ -4234,6 +4445,7 @@ class Game {
             this.props.forEach(pushRef);
             this.monsters.forEach(pushRef);
             this.projectiles.forEach(pushRef);
+            this.enemyProjectiles.forEach(pushRef);
             if (this.dungeonPortal) pushRef(this.dungeonPortal);
         } else {
             this.townProps.forEach(pushRef);
