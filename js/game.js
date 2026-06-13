@@ -1295,7 +1295,7 @@ class Player {
 // 5. SKELETON MONSTER & COMBAT SYSTEM
 // ==========================================
 class Monster {
-    constructor(x, y, level = 1, rank = 'normal', kind = 'skeleton') {
+    constructor(x, y, level = 1, rank = 'normal', kind = 'skeleton', bossType = 'butcher') {
         this.x = x;
         this.y = y;
         this.radius = 14;
@@ -1390,7 +1390,7 @@ class Monster {
             this.auraColor = '#66aaff';
             if (mod.resists) Object.assign(this.resists, mod.resists);
         } else if (rank === 'boss') {
-            this.name = '도살자';
+            this.bossType = bossType;
             this.maxHp *= 10;
             this.hp = this.maxHp;
             this.atk = Math.floor(this.atk * 1.5);
@@ -1403,6 +1403,34 @@ class Monster {
             this.resists.physical = 0.3;
             this.resists.fire = 0.3;
             this.attackInterval = 75;
+
+            // Ability timers shared by boss types
+            this.summonCooldown = 360;
+            this.novaCooldown = 300;
+            this.enraged = false;
+
+            if (bossType === 'lich') {
+                this.name = '강령왕';
+                this.bodyColor = '#9b6bd6';
+                this.auraColor = '#a64dff';
+                this.maxHp = Math.floor(this.maxHp * 0.85);
+                this.hp = this.maxHp;
+                this.speed = 0.9;
+                this.resists.fire = 0.5;
+                this.resists.lightning = 0.3;
+            } else if (bossType === 'overlord') {
+                this.name = '지옥 군주';
+                this.auraColor = '#ff5500';
+                this.maxHp = Math.floor(this.maxHp * 1.2);
+                this.hp = this.maxHp;
+                this.atk = Math.floor(this.atk * 1.2);
+                this.scale = 2.0;
+                this.radius = 28;
+                this.resists.physical = 0.4;
+                this.resists.fire = 0.6;
+            } else {
+                this.name = '도살자';
+            }
         }
     }
 
@@ -1414,11 +1442,41 @@ class Monster {
 
         if (this.attackCooldown > 0) this.attackCooldown--;
         if (this.slowTimer > 0) this.slowTimer--;
-        const moveSpeed = this.slowTimer > 0 ? this.speed * 0.5 : this.speed;
+        let moveSpeed = this.slowTimer > 0 ? this.speed * 0.5 : this.speed;
 
         const dx = player.x - this.x;
         const dy = player.y - this.y;
         const dist = Math.hypot(dx, dy);
+
+        // Boss special abilities (summon adds, fire nova, enrage at low HP)
+        if (this.rank === 'boss') {
+            if (this.summonCooldown > 0) this.summonCooldown--;
+            if (this.novaCooldown > 0) this.novaCooldown--;
+
+            if (this.bossType === 'overlord' && !this.enraged && this.hp < this.maxHp * 0.3) {
+                this.enraged = true;
+                this.atk = Math.floor(this.atk * 1.4);
+                this.speed *= 1.5;
+                this.auraColor = '#ff2200';
+            }
+            if (this.bossType === 'overlord') moveSpeed = this.enraged ? this.speed * 1.0 : this.speed;
+
+            if (this.bossType === 'lich') {
+                if (this.summonCooldown === 0) {
+                    this.summonCooldown = 360;
+                    this.pendingSummon = 2; // raise skeletons
+                }
+                if (this.novaCooldown === 0 && dist < 420) {
+                    this.novaCooldown = 90; // frequent ranged bolts
+                    this.pendingShot = { tx: player.x, ty: player.y, dmg: Math.floor(this.atk * 0.8) };
+                }
+            } else if (this.bossType === 'overlord') {
+                if (this.novaCooldown === 0) {
+                    this.novaCooldown = this.enraged ? 150 : 240;
+                    this.pendingNova = { radius: 120, dmg: Math.floor(this.atk * 0.9) };
+                }
+            }
+        }
 
         // Boss strike telegraph: stand still during windup, then the hit
         // only lands if the player is still inside the strike zone
@@ -3592,10 +3650,10 @@ class Game {
         this.floaters.add(this.player.x, this.player.y - 20, `지하 ${this.floor}층`, '#ffcc44');
         this.spawnInitialMonsters();
 
-        // Boss floors: the Butcher rules this floor and seals the stairs
+        // Boss floors: a boss rules this floor and seals the stairs
         if (this.floor % BOSS_FLOOR_INTERVAL === 0) {
             this.spawnBoss();
-            this.floaters.add(this.player.x, this.player.y - 50, "도살자를 처치하기 전엔 내려갈 수 없습니다!", '#ff5555');
+            this.floaters.add(this.player.x, this.player.y - 50, "보스를 처치하기 전엔 내려갈 수 없습니다!", '#ff5555');
         }
 
         this.updateUI();
@@ -3719,18 +3777,32 @@ class Game {
         return 'skeleton';
     }
 
+    // Which boss rules a given boss floor (cycles, getting nastier with depth)
+    bossTypeForFloor(floor) {
+        const stage = Math.floor(floor / BOSS_FLOOR_INTERVAL); // 1, 2, 3, ...
+        if (stage <= 1) return 'butcher';
+        if (stage === 2) return 'lich';
+        return 'overlord';
+    }
+
     spawnBoss() {
         if (this.monsters.some(m => m.rank === 'boss' && m.state !== 'death')) return false;
 
         const bossPos = this.dungeonMap.bossPoint || this.dungeonMap.spawnPoint;
         const cx = bossPos.x;
         const cy = bossPos.y;
-        const boss = new Monster(cx, cy, this.floor * 2 + 1, 'boss');
+        const bossType = this.bossTypeForFloor(this.floor);
+        const boss = new Monster(cx, cy, this.floor * 2 + 1, 'boss', 'skeleton', bossType);
         this.monsters.push(boss);
 
+        const cries = {
+            butcher: '신선한 고기다!',
+            lich: '죽음은 끝이 아니다...',
+            overlord: '필멸자여, 무릎 꿇어라!'
+        };
         sfx.playBossSpawn();
-        this.floaters.add(this.player.x, this.player.y - 35, "⚠ 도살자가 깨어났습니다!", '#ff2200');
-        this.floaters.add(boss.x, boss.y - 30, "신선한 고기다!", '#ff2200');
+        this.floaters.add(this.player.x, this.player.y - 35, `⚠ ${boss.name}이(가) 깨어났습니다!`, '#ff2200');
+        this.floaters.add(boss.x, boss.y - 30, cries[bossType], '#ff2200');
         return true;
     }
 
@@ -3753,7 +3825,7 @@ class Game {
         this.updateUI();
 
         if (monster.rank === 'boss') {
-            this.floaters.add(monster.x, monster.y - 25, "도살자 처치!", '#ff5500');
+            this.floaters.add(monster.x, monster.y - 25, `${monster.name} 처치!`, '#ff5500');
             for (let i = 0; i < 3; i++) {
                 this.lootItem(monster.level, true);
             }
@@ -4326,7 +4398,7 @@ class Game {
                     if (this.stairsMsgCooldown <= 0) {
                         this.stairsMsgCooldown = 90;
                         sfx.playHit();
-                        this.floaters.add(this.player.x, this.player.y - 20, "도살자가 살아있는 동안 계단이 봉인되어 있습니다!", '#ff5555');
+                        this.floaters.add(this.player.x, this.player.y - 20, "보스가 살아있는 동안 계단이 봉인되어 있습니다!", '#ff5555');
                     }
                 } else {
                     this.descendStairs();
@@ -4388,13 +4460,44 @@ class Game {
                     if (!this.isGameRunning) return;
                 }
 
-                // Necromancer queued a ranged bolt this frame
+                // Necromancer/lich queued a ranged bolt this frame
                 if (m.pendingShot) {
                     this.enemyProjectiles.push(new EnemyProjectile(
                         m.x, m.y, m.pendingShot.tx, m.pendingShot.ty, m.pendingShot.dmg
                     ));
                     sfx.playFireball();
                     m.pendingShot = null;
+                }
+
+                // Lich raises skeleton minions around itself
+                if (m.pendingSummon) {
+                    const count = m.pendingSummon;
+                    m.pendingSummon = null;
+                    if (this.monsters.length < MAX_MONSTERS + 6) {
+                        for (let s = 0; s < count; s++) {
+                            const ang = Math.random() * Math.PI * 2;
+                            const minion = new Monster(
+                                m.x + Math.cos(ang) * 40, m.y + Math.sin(ang) * 40,
+                                this.floor * 2, 'normal', 'skeleton'
+                            );
+                            minion.goldMult = 0;
+                            this.monsters.push(minion);
+                        }
+                        this.floaters.add(m.x, m.y - 36, "망자 소환!", '#a64dff');
+                        sfx.playBossSpawn();
+                    }
+                }
+
+                // Overlord erupts a fire nova; damages the player if too close
+                if (m.pendingNova) {
+                    const nova = m.pendingNova;
+                    m.pendingNova = null;
+                    this.effects.push({ type: 'whirlwind', x: m.x, y: m.y, radius: nova.radius, color: '#ff5500', life: 22, maxLife: 22 });
+                    sfx.playFireball();
+                    if (Math.hypot(this.player.x - m.x, this.player.y - m.y) <= nova.radius) {
+                        this.damagePlayer(nova.dmg);
+                        if (!this.isGameRunning) return;
+                    }
                 }
 
                 if (m.state === 'death' && m.deathTimer <= 0) {
