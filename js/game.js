@@ -870,7 +870,11 @@ class Player {
         this.nextExp = 100;
         this.statPoints = 0;
         this.skillPoints = 0;
+        // skills maps skillKey -> level (>=1 means learned). skillAccess lists
+        // which skills this character may learn (a class overrides it later).
         this.skills = { fireball: 1 };
+        this.skillAccess = ['fireball', 'frostbolt', 'chain', 'whirlwind'];
+        this.activeSkill = 'fireball'; // bound to right-click / '>'
         this.fireballBonus = 0;
         // Belt potions store heal percentages (of max HP/MP) so healing
         // keeps pace with level scaling
@@ -1036,12 +1040,20 @@ class Player {
 
     addSkillPoint(skillKey) {
         if (this.skillPoints <= 0) return false;
-        if (skillKey !== 'fireball') return false;
-        const lvl = this.skills.fireball;
-        if (lvl >= 20) return false;
+        if (!this.skillAccess.includes(skillKey)) return false;
+        const lvl = this.skills[skillKey] || 0; // 0 means not yet learned
+        if (lvl >= SKILLS[skillKey].maxLevel) return false;
         this.skillPoints--;
-        this.skills.fireball = lvl + 1;
+        this.skills[skillKey] = lvl + 1;
         return true;
+    }
+
+    // Learned level plus item bonuses. Fireball gains the '의 마법사' suffix
+    // bonus; returns 0 for skills the character hasn't learned.
+    effectiveSkillLevel(skillKey) {
+        const base = this.skills[skillKey] || 0;
+        if (base === 0) return 0;
+        return base + (skillKey === 'fireball' ? (this.fireballBonus || 0) : 0);
     }
 
     update(map) {
@@ -1303,6 +1315,7 @@ class Monster {
         this.attackCooldown = 0;
         this.attackInterval = 60;
         this.windup = 0; // boss telegraph: frames remaining before the strike lands
+        this.slowTimer = 0; // frost effect: halves movement while > 0
 
         this.animTimer = Math.random() * 10;
         this.animSpeed = 0.1;
@@ -1365,6 +1378,8 @@ class Monster {
         }
 
         if (this.attackCooldown > 0) this.attackCooldown--;
+        if (this.slowTimer > 0) this.slowTimer--;
+        const moveSpeed = this.slowTimer > 0 ? this.speed * 0.5 : this.speed;
 
         const dx = player.x - this.x;
         const dy = player.y - this.y;
@@ -1384,8 +1399,8 @@ class Monster {
         if (dist < aggroRange && dist > 15) {
             this.animTimer += this.animSpeed;
             
-            const vx = (dx / dist) * this.speed;
-            const vy = (dy / dist) * this.speed;
+            const vx = (dx / dist) * moveSpeed;
+            const vy = (dy / dist) * moveSpeed;
 
             let angle = Math.atan2(vy, vx);
             if (angle < 0) angle += Math.PI * 2;
@@ -1415,14 +1430,20 @@ class Monster {
         const resist = this.resists[type] || 0;
         const final = Math.max(1, Math.floor(amount * (1 - resist)));
 
+        // Damage numbers take the element's tint so hits read at a glance
+        const dmgColor = { fire: '#ff8844', cold: '#9adcff', lightning: '#d9b3ff', physical: '#ffcc00' }[type] || '#ffcc00';
         this.hp -= final;
-        floaters.add(this.x, this.y - 12, final.toString(), '#ffcc00');
+        floaters.add(this.x, this.y - 12, final.toString(), dmgColor);
 
         if (this.hp <= 0) {
             this.state = 'death';
             return this.expValue;
         }
         return 0;
+    }
+
+    applySlow(frames) {
+        this.slowTimer = Math.max(this.slowTimer, frames);
     }
 
     render(ctx, camera, viewWidth, viewHeight) {
@@ -1490,6 +1511,19 @@ class Monster {
         ctx.beginPath();
         ctx.ellipse(screenX, screenY + 4, 12, 6, 0, 0, Math.PI * 2);
         ctx.fill();
+
+        // Frost-slow shimmer
+        if (this.slowTimer > 0 && this.state !== 'death') {
+            ctx.save();
+            ctx.globalAlpha = 0.4;
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = '#5bc8ff';
+            ctx.fillStyle = 'rgba(120, 210, 255, 0.5)';
+            ctx.beginPath();
+            ctx.ellipse(screenX, screenY - 6, 10, 14, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+        }
 
         if (this.isLoaded && this.processedSheet) {
             // skeleton.png is a labeled animation sheet (8 columns of 128px);
@@ -1597,7 +1631,7 @@ class Monster {
 // 6. FIREBALL PROJECTILE ENGINE
 // ==========================================
 class Projectile {
-    constructor(x, y, tx, ty, damage = 25, level = 1, type = 'physical') {
+    constructor(x, y, tx, ty, damage = 25, level = 1, type = 'physical', skillKey = 'fireball') {
         this.x = x;
         this.y = y;
         this.radius = 8 + (level - 1) * 0.5;
@@ -1613,6 +1647,12 @@ class Projectile {
         this.vy = (dy / dist) * speed;
         this.angle = Math.atan2(dy, dx);
         this.type = type;
+
+        const def = SKILLS[skillKey] || SKILLS.fireball;
+        this.skillKey = skillKey;
+        this.color = def.color || '#ff4500';
+        this.slow = def.slow || 0;     // frames of slow applied on hit
+        this.splash = def.splash || 0; // splash radius on impact (0 = single target)
     }
 
     update(map) {
@@ -1635,20 +1675,20 @@ class Projectile {
 
         ctx.save();
         ctx.shadowBlur = 15 + (this.level - 1) * 2;
-        ctx.shadowColor = '#ff4500';
+        ctx.shadowColor = this.color;
 
         const grad = ctx.createRadialGradient(screenX, screenY, 1, screenX, screenY, this.radius + 4);
         grad.addColorStop(0, '#ffffff');
-        grad.addColorStop(0.3, '#ffcc00');
-        grad.addColorStop(0.6, '#ff4500');
-        grad.addColorStop(1, 'rgba(255, 69, 0, 0)');
+        grad.addColorStop(0.45, this.color);
+        grad.addColorStop(1, 'transparent');
         ctx.fillStyle = grad;
 
         ctx.beginPath();
         ctx.arc(screenX, screenY, this.radius + 4, 0, Math.PI * 2);
         ctx.fill();
 
-        ctx.fillStyle = 'rgba(255, 69, 0, 0.4)';
+        ctx.globalAlpha = 0.4;
+        ctx.fillStyle = this.color;
         ctx.beginPath();
         const trailX = screenX - Math.cos(this.angle) * 10;
         const trailY = screenY - Math.sin(this.angle) * 5;
@@ -2290,6 +2330,28 @@ const GEM_TYPES = [
 
 const BOSS_FLOOR_INTERVAL = 3; // every 3rd floor is a boss floor
 
+// Data-driven active skills. Damage scales off the player's ATK; mana cost and
+// multiplier grow per skill level. `kind` decides the delivery:
+//   projectile  - travels and hits one target (fire/cold), cold also slows
+//   chain       - instant bolt that jumps between nearby enemies (lightning)
+//   melee_aoe   - instant hit on every enemy around the player (physical)
+const SKILLS = {
+    fireball:  { name: '화염구', icon: '🔥', kind: 'projectile', damageType: 'fire',
+                 baseMult: 1.8, multPerLevel: 0.4, baseCost: 15, costPerLevel: 2.5,
+                 maxLevel: 20, color: '#ff4500', splash: 40 },
+    frostbolt: { name: '냉기 화살', icon: '❄', kind: 'projectile', damageType: 'cold',
+                 baseMult: 1.3, multPerLevel: 0.28, baseCost: 12, costPerLevel: 2,
+                 maxLevel: 20, color: '#5bc8ff', slow: 110 },
+    chain:     { name: '연쇄 번개', icon: '⚡', kind: 'chain', damageType: 'lightning',
+                 baseMult: 1.4, multPerLevel: 0.30, baseCost: 18, costPerLevel: 3,
+                 maxLevel: 20, color: '#b98bff', jumps: 3, jumpRange: 170 },
+    whirlwind: { name: '회전 베기', icon: '🌀', kind: 'melee_aoe', damageType: 'physical',
+                 baseMult: 1.1, multPerLevel: 0.22, baseCost: 14, costPerLevel: 2,
+                 maxLevel: 20, color: '#ffe6b4', radius: 90 }
+};
+function skillMult(key, lvl) { const s = SKILLS[key]; return s.baseMult + (lvl - 1) * s.multPerLevel; }
+function skillCost(key, lvl) { const s = SKILLS[key]; return Math.round(s.baseCost + (lvl - 1) * s.costPerLevel); }
+
 class Game {
     constructor() {
         this.canvas = document.getElementById('gameCanvas');
@@ -2316,6 +2378,7 @@ class Game {
 
         this.monsters = [];
         this.projectiles = [];
+        this.effects = []; // transient visual FX (lightning arcs, whirlwind rings)
         this.dungeonPortal = null;
         this.townPortal = null;
         this.floaters = new FloaterManager();
@@ -2452,12 +2515,7 @@ class Game {
             });
         }
 
-        document.getElementById('up-fireball').addEventListener('click', () => {
-            if (this.player.addSkillPoint('fireball')) {
-                sfx.playPotion();
-                this.updateUI();
-            }
-        });
+        this.buildSkillsPanel();
 
         const startBtn = document.getElementById('start-game-btn');
         const guidePanel = document.getElementById('guide-panel');
@@ -2508,7 +2566,7 @@ class Game {
         });
 
         document.getElementById('slot-rclick').addEventListener('click', () => {
-            if (this.isGameRunning) this.triggerFireballKey();
+            if (this.isGameRunning) this.triggerSkillKey();
         });
 
         const slots = document.querySelectorAll('.inv-slot');
@@ -2742,7 +2800,9 @@ class Game {
             } else if (code === 'Comma' || key === ',' || key === '<') {
                 if (this.isGameRunning) this.triggerMeleeKey();
             } else if (code === 'Period' || key === '.' || key === '>') {
-                if (this.isGameRunning) this.triggerFireballKey();
+                if (this.isGameRunning) this.triggerSkillKey();
+            } else if (code === 'Digit1' || code === 'Digit2' || code === 'Digit3' || code === 'Digit4') {
+                if (this.isGameRunning) this.selectSkill(parseInt(code.slice(5)) - 1);
             } else if (code === 'KeyQ' || key === 'Q') {
                 this.triggerPotion();
             } else if (code === 'KeyR' || key === 'R') {
@@ -2942,48 +3002,114 @@ class Game {
 
     handleRightClick(sx, sy) {
         const cartDest = this.screenToCartesian(sx, sy);
-        this.castFireball(cartDest.x, cartDest.y);
+        this.castSkill(this.player.activeSkill, cartDest.x, cartDest.y);
     }
 
-    castFireball(tx, ty) {
+    castSkill(key, tx, ty) {
         if (this.currentMap === 'town') {
             this.floaters.add(this.player.x, this.player.y - 15, "마을은 안전지대입니다.", "#00ffff");
             return;
         }
-        const effectiveSlvl = this.player.skills.fireball + (this.player.fireballBonus || 0);
-        const damageMultiplier = 1.8 + (effectiveSlvl - 1) * 0.4;
-        const spellCost = 15 + (effectiveSlvl - 1) * 2.5;
-
-        if (this.player.mp < spellCost) {
-            this.floaters.add(this.player.x, this.player.y - 15, "마나 부족!", "#55aaff");
+        const def = SKILLS[key];
+        const lvl = this.player.effectiveSkillLevel(key);
+        if (!def || lvl === 0) {
+            this.floaters.add(this.player.x, this.player.y - 15, "미습득 스킬!", "#888888");
             return;
         }
 
-        this.player.mp -= spellCost;
+        const cost = skillCost(key, lvl);
+        if (this.player.mp < cost) {
+            this.floaters.add(this.player.x, this.player.y - 15, "마나 부족!", "#55aaff");
+            return;
+        }
+        this.player.mp -= cost;
 
-        const dx = tx - this.player.x;
-        const dy = ty - this.player.y;
-        let angle = Math.atan2(dy, dx);
+        // face the target
+        let angle = Math.atan2(ty - this.player.y, tx - this.player.x);
         if (angle < 0) angle += Math.PI * 2;
         this.player.direction = Math.round(angle / (Math.PI / 4)) % 8;
 
-        sfx.playFireball();
+        const damage = Math.floor(this.player.atk * skillMult(key, lvl));
 
-        // projectile carries damage type 'fire'
-        const fireDamage = Math.floor(this.player.atk * damageMultiplier);
-        this.projectiles.push(new Projectile(
-            this.player.x,
-            this.player.y,
-            tx,
-            ty,
-            fireDamage,
-            effectiveSlvl,
-            'fire'
-        ));
+        if (def.kind === 'projectile') {
+            sfx.playFireball();
+            this.projectiles.push(new Projectile(
+                this.player.x, this.player.y, tx, ty, damage, lvl, def.damageType, key
+            ));
+        } else if (def.kind === 'chain') {
+            this.castChainLightning(damage, def, lvl);
+        } else if (def.kind === 'melee_aoe') {
+            this.castWhirlwind(damage, def);
+        }
 
         this.player.state = 'attack';
         this.player.attackTimer = 12;
+        this.updateUI();
+    }
 
+    castChainLightning(baseDmg, def, lvl) {
+        const maxJumps = def.jumps + Math.floor((lvl - 1) / 5);
+        const hitSet = new Set();
+        let from = { x: this.player.x, y: this.player.y };
+        const segments = [{ x: from.x, y: from.y }];
+        let dmg = baseDmg;
+
+        for (let j = 0; j <= maxJumps; j++) {
+            const range = j === 0 ? 600 : def.jumpRange;
+            let target = null;
+            let best = range;
+            for (const m of this.monsters) {
+                if (m.state === 'death' || hitSet.has(m)) continue;
+                const d = Math.hypot(m.x - from.x, m.y - from.y);
+                if (d <= best) { best = d; target = m; }
+            }
+            if (!target) break;
+
+            hitSet.add(target);
+            segments.push({ x: target.x, y: target.y });
+            const exp = target.takeDamage(Math.floor(dmg), this.floaters, def.damageType);
+            if (exp > 0) this.handleMonsterKill(target);
+            from = { x: target.x, y: target.y };
+            dmg *= 0.8; // falloff per jump
+        }
+
+        if (segments.length > 1) {
+            sfx.playFireball();
+            this.effects.push({ type: 'lightning', segments, color: def.color, life: 12, maxLife: 12 });
+        } else {
+            this.floaters.add(this.player.x, this.player.y - 15, "대상 없음", def.color);
+        }
+        this.updateUI();
+    }
+
+    castWhirlwind(dmg, def) {
+        sfx.playSlash();
+        for (const m of this.monsters) {
+            if (m.state === 'death') continue;
+            if (Math.hypot(m.x - this.player.x, m.y - this.player.y) <= def.radius + m.radius) {
+                let d = dmg;
+                if (Math.random() < (this.player.critChance || 0)) {
+                    d = Math.floor(d * (this.player.critMultiplier || 1));
+                    this.floaters.add(m.x, m.y - 10, 'CRIT!', '#ffdd55');
+                }
+                const exp = m.takeDamage(d, this.floaters, def.damageType);
+                if (exp > 0) this.handleMonsterKill(m);
+            }
+        }
+        this.effects.push({ type: 'whirlwind', x: this.player.x, y: this.player.y, radius: def.radius, color: def.color, life: 14, maxLife: 14 });
+        this.updateUI();
+    }
+
+    selectSkill(index) {
+        const key = this.player.skillAccess[index];
+        if (!key) return;
+        if ((this.player.skills[key] || 0) === 0) {
+            this.floaters.add(this.player.x, this.player.y - 15, `${SKILLS[key].name}: 미습득`, "#888888");
+            return;
+        }
+        this.player.activeSkill = key;
+        this.floaters.add(this.player.x, this.player.y - 15, `${SKILLS[key].name} 선택`, SKILLS[key].color);
+        sfx.playPotion();
         this.updateUI();
     }
 
@@ -3011,13 +3137,20 @@ class Game {
         }
     }
 
-    triggerFireballKey() {
+    triggerSkillKey() {
+        const key = this.player.activeSkill;
+        const def = SKILLS[key];
+        if (def && def.kind === 'melee_aoe') {
+            this.castSkill(key, this.player.x, this.player.y);
+            return;
+        }
         const target = this.findNearestMonster(600);
         if (target) {
-            this.castFireball(target.x, target.y);
+            this.castSkill(key, target.x, target.y);
         } else {
             const angle = this.player.direction * (Math.PI / 4);
-            this.castFireball(
+            this.castSkill(
+                key,
                 this.player.x + Math.cos(angle) * 120,
                 this.player.y + Math.sin(angle) * 120
             );
@@ -3292,6 +3425,7 @@ class Game {
         this.map = this.dungeonMap;
         this.monsters = [];
         this.projectiles = [];
+        this.effects = [];
         this.dungeonPortal = null;
         this.townPortal = null;
         this.props = this.buildDungeonProps(this.dungeonMap);
@@ -3811,25 +3945,106 @@ class Game {
         document.getElementById('up-maxhp').disabled = !hasPoints;
         document.getElementById('up-maxmp').disabled = !hasPoints;
 
-        // Skills Panel UI
-        const effectiveSlvl = this.player.skills.fireball + (this.player.fireballBonus || 0);
-        const damageMultiplier = 1.8 + (effectiveSlvl - 1) * 0.4;
-        const spellCost = 15 + (effectiveSlvl - 1) * 2.5;
+        this.updateSkillsPanel();
 
-        document.getElementById('skill-points').textContent = this.player.skillPoints.toString();
-        
-        let lvlText = `LV ${this.player.skills.fireball}`;
-        if (this.player.fireballBonus > 0) {
-            lvlText += ` (+${this.player.fireballBonus})`;
+        // HUD secondary-skill slot reflects the active skill
+        const activeDef = SKILLS[this.player.activeSkill];
+        const rclickName = document.querySelector('#slot-rclick .slot-name');
+        const rclickIcon = document.querySelector('#slot-rclick .slot-icon');
+        if (activeDef && rclickName) rclickName.textContent = activeDef.name;
+        if (activeDef && rclickIcon) {
+            rclickIcon.textContent = activeDef.icon;
+            rclickIcon.style.background = 'none';
+            rclickIcon.style.boxShadow = 'none';
+            rclickIcon.style.fontSize = '18px';
+            rclickIcon.style.display = 'flex';
+            rclickIcon.style.alignItems = 'center';
+            rclickIcon.style.justifyContent = 'center';
         }
-        document.getElementById('skill-fireball-level').textContent = lvlText;
-        
-        document.getElementById('skill-fireball-desc').textContent = `공격력의 ${damageMultiplier.toFixed(1)}배 피해 (마나 ${spellCost.toFixed(0)} 소모)`;
-        
-        const hasSkillPoints = this.player.skillPoints > 0 && this.player.skills.fireball < 20;
-        document.getElementById('up-fireball').disabled = !hasSkillPoints;
 
         this.syncInventoryUI();
+    }
+
+    // One-time build of the skills panel: a row per accessible skill with a
+    // select button (set active) and an upgrade button (spend a skill point)
+    buildSkillsPanel() {
+        const list = document.getElementById('skills-list');
+        if (!list) return;
+        list.innerHTML = '';
+        this.skillRows = {};
+
+        this.player.skillAccess.forEach((key, index) => {
+            const def = SKILLS[key];
+            const row = document.createElement('div');
+            row.className = 'skill-upgrade-group';
+
+            const info = document.createElement('div');
+            info.className = 'skill-upgrade-info';
+            const name = document.createElement('span');
+            name.className = 'skill-upgrade-name';
+            name.style.color = def.color;
+            name.textContent = `${def.icon} ${def.name}`;
+            const lvl = document.createElement('span');
+            lvl.className = 'skill-upgrade-level';
+            info.appendChild(name);
+            info.appendChild(lvl);
+
+            const controls = document.createElement('div');
+            controls.className = 'skill-upgrade-controls';
+            const desc = document.createElement('span');
+            desc.className = 'skill-upgrade-desc';
+            const selectBtn = document.createElement('button');
+            selectBtn.className = 'gothic-btn skill-select-btn';
+            selectBtn.textContent = `선택 (${index + 1})`;
+            selectBtn.addEventListener('click', () => this.selectSkill(index));
+            const upBtn = document.createElement('button');
+            upBtn.className = 'stat-up-btn';
+            upBtn.textContent = '+';
+            upBtn.addEventListener('click', () => {
+                if (this.player.addSkillPoint(key)) {
+                    sfx.playPotion();
+                    this.updateUI();
+                }
+            });
+            controls.appendChild(desc);
+            controls.appendChild(selectBtn);
+            controls.appendChild(upBtn);
+
+            row.appendChild(info);
+            row.appendChild(controls);
+            list.appendChild(row);
+
+            this.skillRows[key] = { lvl, desc, selectBtn, upBtn };
+        });
+    }
+
+    updateSkillsPanel() {
+        const ptsEl = document.getElementById('skill-points');
+        if (ptsEl) ptsEl.textContent = this.player.skillPoints.toString();
+        if (!this.skillRows) return;
+
+        for (const key of this.player.skillAccess) {
+            const row = this.skillRows[key];
+            if (!row) continue;
+            const def = SKILLS[key];
+            const baseLvl = this.player.skills[key] || 0;
+            const effLvl = this.player.effectiveSkillLevel(key);
+            const isActive = this.player.activeSkill === key;
+
+            if (baseLvl === 0) {
+                row.lvl.textContent = '미습득';
+                row.desc.textContent = `습득 시 공격력의 ${def.baseMult.toFixed(1)}배 피해`;
+                row.selectBtn.disabled = true;
+            } else {
+                let lvlText = `LV ${baseLvl}`;
+                if (effLvl > baseLvl) lvlText += ` (+${effLvl - baseLvl})`;
+                row.lvl.textContent = lvlText;
+                row.desc.textContent = `공격력의 ${skillMult(key, effLvl).toFixed(1)}배 피해 (마나 ${skillCost(key, effLvl)})`;
+                row.selectBtn.disabled = isActive;
+            }
+            row.selectBtn.textContent = isActive ? '사용 중' : `선택 (${this.player.skillAccess.indexOf(key) + 1})`;
+            row.upBtn.disabled = !(this.player.skillPoints > 0 && baseLvl < def.maxLevel);
+        }
     }
 
     resize() {
@@ -3930,24 +4145,41 @@ class Game {
                 const p = this.projectiles.at(i);
                 p.update(this.map);
 
-                let hit = false;
+                let hitMonster = null;
                 for (const m of this.monsters) {
                     if (m.state === 'death') continue;
                     if (Math.hypot(p.x - m.x, p.y - m.y) < p.radius + m.radius) {
-                        const expGained = m.takeDamage(p.damage, this.floaters, p.type);
-                        if (expGained > 0) {
-                            this.handleMonsterKill(m);
-                        }
-                        hit = true;
-                        this.updateUI();
+                        hitMonster = m;
                         break;
                     }
                 }
 
-                if (hit || p.life <= 0) {
+                if (hitMonster) {
+                    const expGained = hitMonster.takeDamage(p.damage, this.floaters, p.type);
+                    if (p.slow) hitMonster.applySlow(p.slow);
+                    if (expGained > 0) this.handleMonsterKill(hitMonster);
+
+                    // Fireball splash: reduced damage to other nearby monsters
+                    if (p.splash > 0) {
+                        for (const m of this.monsters) {
+                            if (m === hitMonster || m.state === 'death') continue;
+                            if (Math.hypot(p.x - m.x, p.y - m.y) <= p.splash + m.radius) {
+                                const exp = m.takeDamage(Math.floor(p.damage * 0.6), this.floaters, p.type);
+                                if (exp > 0) this.handleMonsterKill(m);
+                            }
+                        }
+                        this.effects.push({ type: 'whirlwind', x: p.x, y: p.y, radius: p.splash, color: p.color, life: 10, maxLife: 10 });
+                    }
+                    this.updateUI();
+                }
+
+                if (hitMonster || p.life <= 0) {
                     this.projectiles.splice(i, 1);
                 }
             }
+
+            // Age out transient skill effects
+            this.effects = this.effects.filter(e => --e.life > 0);
 
             for (let i = this.monsters.length - 1; i >= 0; i--) {
                 const m = this.monsters.at(i);
@@ -4014,6 +4246,7 @@ class Game {
             ent.render();
         }
 
+        this.renderEffects();
         this.ctx.restore();
 
         this.renderLighting();
@@ -4025,6 +4258,58 @@ class Game {
         this.ctx.restore();
 
         this.renderMinimap();
+    }
+
+    // Lightning arcs and whirlwind/splash rings, drawn in the zoomed world pass
+    renderEffects() {
+        if (this.effects.length === 0) return;
+        const ctx = this.ctx;
+        const isoCam = this.camera.getIsoOffset();
+        const hw = this.canvas.width / 2;
+        const hh = this.canvas.height / 2;
+        const toScreen = (x, y) => ({
+            x: (x - y) - isoCam.x + hw,
+            y: (x + y) * 0.5 - isoCam.y + hh
+        });
+
+        for (const e of this.effects) {
+            const a = e.life / e.maxLife;
+            ctx.save();
+            if (e.type === 'lightning') {
+                ctx.globalAlpha = a;
+                ctx.strokeStyle = e.color;
+                ctx.shadowColor = e.color;
+                ctx.shadowBlur = 12;
+                ctx.lineWidth = 2.5;
+                ctx.lineCap = 'round';
+                ctx.beginPath();
+                for (let i = 0; i < e.segments.length; i++) {
+                    const s = toScreen(e.segments[i].x, e.segments[i].y);
+                    if (i === 0) {
+                        ctx.moveTo(s.x, s.y);
+                    } else {
+                        // jittered midpoint gives each arc a jagged bolt look
+                        const prev = toScreen(e.segments[i - 1].x, e.segments[i - 1].y);
+                        ctx.lineTo((prev.x + s.x) / 2 + (Math.random() - 0.5) * 12,
+                                   (prev.y + s.y) / 2 + (Math.random() - 0.5) * 12);
+                        ctx.lineTo(s.x, s.y);
+                    }
+                }
+                ctx.stroke();
+            } else if (e.type === 'whirlwind') {
+                const c = toScreen(e.x, e.y);
+                ctx.globalAlpha = a * 0.7;
+                ctx.strokeStyle = e.color;
+                ctx.shadowColor = e.color;
+                ctx.shadowBlur = 8;
+                ctx.lineWidth = 3;
+                const grow = 0.55 + (1 - a) * 0.5;
+                ctx.beginPath();
+                ctx.ellipse(c.x, c.y - 6, e.radius * grow, e.radius * 0.5 * grow, (1 - a) * Math.PI * 2, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+            ctx.restore();
+        }
     }
 }
 

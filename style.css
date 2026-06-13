@@ -737,6 +737,23 @@ canvas {
     flex: 1;
 }
 
+.skill-select-btn {
+    padding: 4px 8px;
+    font-size: 11px;
+    white-space: nowrap;
+}
+.skill-select-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.skill-hint {
+    font-size: 10px;
+    color: #888;
+    text-align: center;
+    padding-top: 6px;
+}
+
 /* Shop Panel Position */
 #shop-panel {
     top: 60px;
