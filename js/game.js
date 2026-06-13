@@ -2092,7 +2092,7 @@ class Prop {
         this.animTimer = Math.random() * 10;
         this.seed = Math.floor(Math.random() * 1000);
         // Flat decals draw beneath every actor and wall
-        this.depthOffset = (type === 'stairs' || type === 'bones') ? -1e6 : 0;
+        this.depthOffset = (type === 'stairs' || type === 'bones' || type === 'trap') ? -1e6 : 0;
     }
 
     update() {
@@ -2103,6 +2103,8 @@ class Prop {
     lightRadius() {
         if (this.type === 'torch') return 105 + Math.sin(this.animTimer * 4) * 8;
         if (this.type === 'campfire') return 130 + Math.sin(this.animTimer * 3) * 10;
+        if (this.type === 'chest' && !this.opened) return 70;
+        if (this.type === 'altar' && !this.used) return 80;
         return 0;
     }
 
@@ -2437,6 +2439,113 @@ Prop.RENDERERS = {
         ctx.lineTo(x, y);
         ctx.closePath();
         ctx.fill();
+    },
+
+    chest(ctx, x, y, p) {
+        ctx.fillStyle = 'rgba(0,0,0,0.35)';
+        ctx.beginPath();
+        ctx.ellipse(x, y + 3, 15, 7, 0, 0, Math.PI * 2);
+        ctx.fill();
+        const opened = p.opened;
+        if (!opened) {
+            const glow = 0.4 + Math.sin(p.animTimer * 2) * 0.2;
+            ctx.save();
+            ctx.shadowBlur = 12;
+            ctx.shadowColor = `rgba(255, 210, 90, ${glow})`;
+            // body
+            ctx.fillStyle = '#6a4322';
+            ctx.fillRect(x - 13, y - 8, 26, 16);
+            // lid
+            ctx.fillStyle = '#7e5128';
+            ctx.beginPath();
+            ctx.moveTo(x - 13, y - 8);
+            ctx.lineTo(x, y - 16);
+            ctx.lineTo(x + 13, y - 8);
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
+            // gold bands + lock
+            ctx.fillStyle = '#d4af37';
+            ctx.fillRect(x - 13, y - 1, 26, 3);
+            ctx.fillRect(x - 2, y - 6, 4, 8);
+        } else {
+            // open, emptied chest
+            ctx.fillStyle = '#4a3018';
+            ctx.fillRect(x - 13, y - 4, 26, 12);
+            ctx.fillStyle = '#2a1c0e';
+            ctx.fillRect(x - 11, y - 2, 22, 8);
+            ctx.fillStyle = '#5a3a1e';
+            ctx.beginPath();
+            ctx.moveTo(x - 13, y - 4);
+            ctx.lineTo(x - 4, y - 18);
+            ctx.lineTo(x + 6, y - 16);
+            ctx.lineTo(x + 13, y - 4);
+            ctx.closePath();
+            ctx.fill();
+        }
+    },
+
+    altar(ctx, x, y, p) {
+        ctx.fillStyle = 'rgba(0,0,0,0.4)';
+        ctx.beginPath();
+        ctx.ellipse(x, y + 4, 18, 9, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // stone base
+        ctx.fillStyle = '#4a4450';
+        ctx.fillRect(x - 14, y - 6, 28, 14);
+        ctx.fillStyle = '#5a5460';
+        ctx.beginPath();
+        ctx.moveTo(x - 14, y - 6);
+        ctx.lineTo(x, y - 12);
+        ctx.lineTo(x + 14, y - 6);
+        ctx.lineTo(x, y);
+        ctx.closePath();
+        ctx.fill();
+        // blood bowl
+        const used = p.used;
+        const glow = used ? 0.1 : 0.4 + Math.sin(p.animTimer * 2) * 0.2;
+        ctx.save();
+        ctx.shadowBlur = used ? 4 : 14;
+        ctx.shadowColor = `rgba(200, 30, 30, ${glow})`;
+        ctx.fillStyle = used ? '#3a2020' : '#b01818';
+        ctx.beginPath();
+        ctx.ellipse(x, y - 11, 8, 4, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    },
+
+    trap(ctx, x, y, p) {
+        // armed: faint rune ring; just-triggered: spikes flash up
+        const firing = p.cooldown > 100;
+        ctx.save();
+        ctx.strokeStyle = firing ? 'rgba(255, 70, 50, 0.9)' : 'rgba(180, 120, 90, 0.35)';
+        ctx.lineWidth = firing ? 2 : 1;
+        ctx.beginPath();
+        ctx.ellipse(x, y, 22, 11, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        if (firing) {
+            ctx.fillStyle = '#cfd3d8';
+            for (let i = 0; i < 6; i++) {
+                const a = (i / 6) * Math.PI * 2;
+                const sx = x + Math.cos(a) * 12;
+                const sy = y + Math.sin(a) * 6;
+                ctx.beginPath();
+                ctx.moveTo(sx - 2, sy);
+                ctx.lineTo(sx, sy - 10);
+                ctx.lineTo(sx + 2, sy);
+                ctx.closePath();
+                ctx.fill();
+            }
+        } else {
+            // dormant rune cross
+            ctx.beginPath();
+            ctx.moveTo(x - 6, y);
+            ctx.lineTo(x + 6, y);
+            ctx.moveTo(x, y - 3);
+            ctx.lineTo(x, y + 3);
+            ctx.stroke();
+        }
+        ctx.restore();
     }
 };
 
@@ -2661,6 +2770,7 @@ class Game {
         this.mouse = { x: 0, y: 0, isDown: false, button: -1 };
         this.zoom = 1.6;
         this.stairsMsgCooldown = 0;
+        this.altarMsgCooldown = 0;
         this.selectedGemIdx = null;
         this.keys = {};
         this.movingByKeys = false;
@@ -3098,6 +3208,8 @@ class Game {
                 if (mmEl) mmEl.classList.toggle('hidden');
             } else if (code === 'KeyT' || key === 'T') {
                 this.triggerTownPortal();
+            } else if (code === 'KeyF' || key === 'F') {
+                if (this.isGameRunning) this.triggerAltar();
             }
         });
 
@@ -3530,6 +3642,44 @@ class Game {
             props.push(new Prop(pos.x, pos.y, Math.random() < 0.5 ? 'bones' : 'jar'));
         }
 
+        // Special interactables: a treasure chest, a blood altar, and traps.
+        // Place the chest/altar in distinct non-spawn rooms.
+        const sideRooms = map.rooms.slice(1).filter(room =>
+            Math.hypot(map.tileToWorld(room.c + room.w / 2, room.r + room.h / 2).x - stairs.x,
+                       map.tileToWorld(room.c + room.w / 2, room.r + room.h / 2).y - stairs.y) > t * 1.5
+        );
+        const shuffled = sideRooms.sort(() => Math.random() - 0.5);
+        if (shuffled[0]) {
+            const cpos = map.tileToWorld(shuffled[0].c + shuffled[0].w / 2 - 0.5, shuffled[0].r + 1);
+            const chest = new Prop(cpos.x, cpos.y, 'chest');
+            chest.opened = false;
+            props.push(chest);
+        }
+        if (shuffled[1]) {
+            const apos = map.tileToWorld(shuffled[1].c + shuffled[1].w / 2 - 0.5, shuffled[1].r + 1);
+            const altar = new Prop(apos.x, apos.y, 'altar');
+            altar.used = false;
+            props.push(altar);
+        }
+
+        // Telegraphed spike traps on a handful of floor tiles
+        const trapTarget = 4 + Math.floor(Math.random() * 3);
+        let placed = 0;
+        let trapAttempts = 0;
+        while (placed < trapTarget && trapAttempts < 200) {
+            trapAttempts++;
+            const c = 2 + Math.floor(Math.random() * (map.cols - 4));
+            const r = 2 + Math.floor(Math.random() * (map.rows - 4));
+            if (map.grid[r][c] !== 0) continue;
+            const pos = map.tileToWorld(c, r);
+            if (Math.hypot(pos.x - map.spawnPoint.x, pos.y - map.spawnPoint.y) < t * 3) continue;
+            if (Math.hypot(pos.x - stairs.x, pos.y - stairs.y) < t * 1.5) continue;
+            const trap = new Prop(pos.x, pos.y, 'trap');
+            trap.cooldown = 0;
+            props.push(trap);
+            placed++;
+        }
+
         props.push(new Prop(stairs.x, stairs.y, 'stairs'));
         return props;
     }
@@ -3848,6 +3998,59 @@ class Game {
         if (this.floor >= 3 && roll < 0.38) return 'zombie';
         if (this.floor >= 4 && roll < 0.55) return 'necromancer';
         return 'skeleton';
+    }
+
+    // Chests auto-open and traps auto-trigger on contact; altars wait for F.
+    handleInteractables() {
+        for (const prop of this.props) {
+            const d = Math.hypot(this.player.x - prop.x, this.player.y - prop.y);
+
+            if (prop.type === 'chest' && !prop.opened && d < 36) {
+                prop.opened = true;
+                sfx.playLevelUp();
+                const gold = Math.floor(40 * this.floor * (1 + Math.random()));
+                this.player.gold += gold;
+                this.floaters.add(prop.x, prop.y - 20, `보물 상자! +${gold} G`, '#ffd700');
+                const drops = 2 + (Math.random() < 0.5 ? 1 : 0);
+                for (let i = 0; i < drops; i++) this.lootItem(this.floor * 2, true);
+                this.updateUI();
+            } else if (prop.type === 'trap') {
+                if (prop.cooldown > 0) prop.cooldown--;
+                if (prop.cooldown === 0 && d < 22) {
+                    prop.cooldown = 150; // spikes show (>100) then re-arm
+                    const dmg = Math.max(5, Math.floor(this.player.maxHp * 0.12));
+                    this.floaters.add(prop.x, prop.y - 14, '함정!', '#ff6644');
+                    this.damagePlayer(dmg);
+                    if (!this.isGameRunning) return;
+                }
+            } else if (prop.type === 'altar' && !prop.used) {
+                if (d < 40 && this.altarMsgCooldown <= 0) {
+                    this.altarMsgCooldown = 90;
+                    this.floaters.add(prop.x, prop.y - 22, 'F: 피의 제단 (체력 30% → 공격력 영구 +15%)', '#ff6666');
+                }
+            }
+        }
+        if (this.altarMsgCooldown > 0) this.altarMsgCooldown--;
+    }
+
+    triggerAltar() {
+        if (!this.isGameRunning || this.currentMap !== 'dungeon') return;
+        const altar = this.props.find(p => p.type === 'altar' && !p.used &&
+            Math.hypot(this.player.x - p.x, this.player.y - p.y) < 40);
+        if (!altar) return;
+        if (this.player.hp < this.player.maxHp * 0.35) {
+            this.floaters.add(this.player.x, this.player.y - 15, '체력이 부족합니다', '#ff5555');
+            sfx.playHit();
+            return;
+        }
+        altar.used = true;
+        const cost = Math.floor(this.player.hp * 0.3);
+        this.player.hp = Math.max(1, this.player.hp - cost);
+        this.player.baseAtk = Math.floor(this.player.baseAtk * 1.15);
+        this.player.recalculateStats(this.inventory);
+        sfx.playLevelUp();
+        this.floaters.add(this.player.x, this.player.y - 20, '피의 계약! 공격력 영구 +15%', '#ff3344');
+        this.updateUI();
     }
 
     // Which boss rules a given boss floor (cycles, getting nastier with depth)
@@ -4530,6 +4733,8 @@ class Game {
                     this.descendStairs();
                 }
             }
+
+            this.handleInteractables();
 
             this.spawnTimer++;
             if (this.spawnTimer >= SPAWN_INTERVAL) {
