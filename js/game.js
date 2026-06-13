@@ -1583,6 +1583,9 @@ class Monster {
         const resist = this.resists[type] || 0;
         const final = Math.max(1, Math.floor(amount * (1 - resist)));
 
+        // Track the player's biggest single hit for the run-over summary
+        if (window.game && final > (window.game.maxHit || 0)) window.game.maxHit = final;
+
         // Damage numbers take the element's tint so hits read at a glance
         const dmgColor = { fire: '#ff8844', cold: '#9adcff', lightning: '#d9b3ff', physical: '#ffcc00' }[type] || '#ffcc00';
         this.hp -= final;
@@ -2777,6 +2780,8 @@ class Game {
         this.unlockedClasses = loadUnlockedClasses();
         this.selectedClass = this.unlockedClasses[0];
         this.classUnlockNotified = false;
+        this.maxHit = 0;
+        this.runStartTime = 0;
 
         this.player.setClass(this.selectedClass);
 
@@ -2913,8 +2918,15 @@ class Game {
             this.updateUI();
             guidePanel.classList.add('hidden');
             this.isGameRunning = true;
+            this.runStartTime = Date.now();
+            this.maxHit = 0;
             this.spawnInitialMonsters();
         });
+
+        const restartBtn = document.getElementById('gameover-restart-btn');
+        if (restartBtn) {
+            restartBtn.addEventListener('click', () => window.location.reload());
+        }
 
         document.getElementById('up-atk').addEventListener('click', () => {
             if (this.player.addStat('atk')) {
@@ -4641,9 +4653,30 @@ class Game {
         if (this.player.hp <= 0) {
             this.floaters.add(this.player.x, this.player.y - 15, "사망!", "#ff0000");
             this.isGameRunning = false;
-            alert("사망하셨습니다! 확인을 누르면 재시작합니다.");
-            window.location.reload();
+            sfx.playMonsterDeath();
+            this.showGameOver();
         }
+    }
+
+    // Run-over summary (permadeath: nothing is saved, this is the only reward)
+    showGameOver() {
+        const elapsedMs = Date.now() - (this.runStartTime || Date.now());
+        const totalSec = Math.floor(elapsedMs / 1000);
+        const mm = Math.floor(totalSec / 60);
+        const ss = totalSec % 60;
+        const cls = CLASSES[this.player.classKey];
+
+        const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+        set('go-class', cls ? `${cls.icon} ${cls.name}` : '-');
+        set('go-floor', `지하 ${this.floor}층`);
+        set('go-level', `Lv ${this.player.level}`);
+        set('go-kills', `${this.player.kills}`);
+        set('go-gold', `${this.player.gold} G`);
+        set('go-maxhit', `${this.maxHit || 0}`);
+        set('go-time', `${mm}분 ${ss}초`);
+
+        const panel = document.getElementById('gameover-panel');
+        if (panel) panel.classList.remove('hidden');
     }
 
     resize() {

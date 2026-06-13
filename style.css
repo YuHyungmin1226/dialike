@@ -737,6 +737,47 @@ canvas {
     flex: 1;
 }
 
+/* Game Over summary */
+#gameover-panel {
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 340px;
+    text-align: center;
+    padding: 28px 26px;
+    z-index: 30;
+}
+.gameover-title {
+    font-family: 'Cinzel Decorative', serif;
+    color: #b01818;
+    font-size: 34px;
+    letter-spacing: 3px;
+    margin: 0 0 4px;
+    text-shadow: 0 0 14px rgba(176, 24, 24, 0.6);
+}
+.gameover-sub {
+    color: #b0a89f;
+    font-size: 12px;
+    margin: 0 0 18px;
+}
+.gameover-stats {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    margin-bottom: 20px;
+}
+.go-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 6px 10px;
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid var(--border-bronze);
+    border-radius: 3px;
+    font-size: 13px;
+}
+.go-row span:first-child { color: #9a9088; }
+.go-row span:last-child { color: #e0d8cf; font-weight: 600; }
+
 /* Class selection on the start screen */
 .class-select-label {
     font-size: 12px;

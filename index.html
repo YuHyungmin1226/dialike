@@ -26,6 +26,22 @@
             <!-- Minimap / Automap (M) -->
             <canvas id="minimap" width="176" height="176"></canvas>
 
+            <!-- Game Over Summary -->
+            <div id="gameover-panel" class="glass-panel hidden">
+                <h2 class="gameover-title">YOU DIED</h2>
+                <p class="gameover-sub">어둠이 당신을 삼켰습니다.</p>
+                <div class="gameover-stats">
+                    <div class="go-row"><span>클래스</span><span id="go-class">-</span></div>
+                    <div class="go-row"><span>도달 깊이</span><span id="go-floor">-</span></div>
+                    <div class="go-row"><span>레벨</span><span id="go-level">-</span></div>
+                    <div class="go-row"><span>처치 수</span><span id="go-kills">-</span></div>
+                    <div class="go-row"><span>획득 골드</span><span id="go-gold">-</span></div>
+                    <div class="go-row"><span>최고 피해</span><span id="go-maxhit">-</span></div>
+                    <div class="go-row"><span>생존 시간</span><span id="go-time">-</span></div>
+                </div>
+                <button id="gameover-restart-btn" class="gothic-btn">새로운 영웅으로 다시 시작</button>
+            </div>
+
             <!-- Start / Help Guide -->
             <div id="guide-panel" class="glass-panel">
                 <h2>DIALIKE</h2>
