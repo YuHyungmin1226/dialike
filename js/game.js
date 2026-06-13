@@ -909,6 +909,28 @@ class Player {
         this.resists = { fire: 0, physical: 0 };
     }
 
+    // Applies a class preset: base stats, skill pool, and starting skill.
+    // Called once at run start before the player has gained anything.
+    setClass(classKey) {
+        const c = CLASSES[classKey];
+        if (!c) return;
+        this.classKey = classKey;
+        this.baseAtk = c.baseAtk;
+        this.baseMaxHp = c.baseMaxHp;
+        this.baseMaxMp = c.baseMaxMp;
+        this.atk = c.baseAtk;
+        this.maxHp = c.baseMaxHp;
+        this.hp = c.baseMaxHp;
+        this.maxMp = c.baseMaxMp;
+        this.mp = c.baseMaxMp;
+        this.critChance = c.critChance;
+        this.critMultiplier = c.critMultiplier;
+        this.attackDuration = c.attackDuration;
+        this.skillAccess = c.skillAccess.slice();
+        this.skills = Object.assign({}, c.startSkill);
+        this.activeSkill = c.activeSkill;
+    }
+
     moveTo(tx, ty) {
         if (this.state === 'attack') return;
         this.path = [];
@@ -2558,6 +2580,46 @@ const SKILLS = {
 function skillMult(key, lvl) { const s = SKILLS[key]; return s.baseMult + (lvl - 1) * s.multPerLevel; }
 function skillCost(key, lvl) { const s = SKILLS[key]; return Math.round(s.baseCost + (lvl - 1) * s.costPerLevel); }
 
+// Character classes. 전사 is available from the start; reaching level 30 with
+// any class permanently unlocks 마법사 and 궁수 (stored in localStorage, a meta
+// unlock — runs themselves still wipe on death).
+const CLASSES = {
+    warrior: {
+        name: '전사', icon: '⚔', color: '#d9534f',
+        desc: '높은 체력과 근접 전투. 회전 베기로 적을 쓸어버린다.',
+        baseAtk: 18, baseMaxHp: 140, baseMaxMp: 30,
+        critChance: 0.08, critMultiplier: 1.9, attackDuration: 18,
+        skillAccess: ['whirlwind', 'fireball'], startSkill: { whirlwind: 1 }, activeSkill: 'whirlwind'
+    },
+    mage: {
+        name: '마법사', icon: '🔮', color: '#5b8dff',
+        desc: '낮은 체력, 강력한 원소 마법과 풍부한 마나.',
+        baseAtk: 12, baseMaxHp: 80, baseMaxMp: 95,
+        critChance: 0.05, critMultiplier: 1.75, attackDuration: 22,
+        skillAccess: ['fireball', 'frostbolt', 'chain'], startSkill: { fireball: 1 }, activeSkill: 'fireball'
+    },
+    archer: {
+        name: '궁수', icon: '🏹', color: '#5fd35f',
+        desc: '균형 잡힌 능력치, 빠른 공격과 냉기 견제.',
+        baseAtk: 15, baseMaxHp: 100, baseMaxMp: 55,
+        critChance: 0.12, critMultiplier: 1.8, attackDuration: 14,
+        skillAccess: ['frostbolt', 'chain', 'fireball'], startSkill: { frostbolt: 1 }, activeSkill: 'frostbolt'
+    }
+};
+const CLASS_UNLOCK_LEVEL = 30;
+const UNLOCK_STORAGE_KEY = 'dialike_unlocked_classes';
+
+function loadUnlockedClasses() {
+    try {
+        const stored = JSON.parse(localStorage.getItem(UNLOCK_STORAGE_KEY));
+        if (Array.isArray(stored) && stored.length) return stored.filter(k => CLASSES[k]);
+    } catch (e) { /* ignore corrupt/blocked storage */ }
+    return ['warrior'];
+}
+function saveUnlockedClasses(list) {
+    try { localStorage.setItem(UNLOCK_STORAGE_KEY, JSON.stringify(list)); } catch (e) { /* ignore */ }
+}
+
 class Game {
     constructor() {
         this.canvas = document.getElementById('gameCanvas');
@@ -2602,10 +2664,15 @@ class Game {
         this.selectedGemIdx = null;
         this.keys = {};
         this.movingByKeys = false;
-        
+        this.unlockedClasses = loadUnlockedClasses();
+        this.selectedClass = this.unlockedClasses[0];
+        this.classUnlockNotified = false;
+
+        this.player.setClass(this.selectedClass);
+
         this.setupUI();
         this.setupInputs();
-        
+
         this.player.recalculateStats(this.inventory);
         this.updateUI();
 
@@ -2722,12 +2789,18 @@ class Game {
             });
         }
 
+        this.buildClassSelect();
         this.buildSkillsPanel();
 
         const startBtn = document.getElementById('start-game-btn');
         const guidePanel = document.getElementById('guide-panel');
         startBtn.addEventListener('click', () => {
             sfx.init();
+            // Lock in the chosen class for this run
+            this.player.setClass(this.selectedClass);
+            this.player.recalculateStats(this.inventory);
+            this.buildSkillsPanel();
+            this.updateUI();
             guidePanel.classList.add('hidden');
             this.isGameRunning = true;
             this.spawnInitialMonsters();
@@ -3819,6 +3892,7 @@ class Game {
         if (isLeveledUp) {
             sfx.playLevelUp();
             this.triggerLevelUpBanner();
+            this.checkClassUnlock();
         }
 
         this.player.recalculateStats(this.inventory);
@@ -4186,6 +4260,13 @@ class Game {
             floorEl.textContent = this.currentMap === 'town' ? '마을' : `지하 ${this.floor}층`;
         }
 
+        const classEl = document.getElementById('stat-class');
+        if (classEl && this.player.classKey) {
+            const c = CLASSES[this.player.classKey];
+            classEl.textContent = `${c.icon} ${c.name}`;
+            classEl.style.color = c.color;
+        }
+
         document.getElementById('stat-level').textContent = this.player.level.toString();
         document.getElementById('stat-atk').textContent = this.player.atk.toString();
         document.getElementById('stat-maxhp').textContent = this.player.maxHp.toString();
@@ -4217,6 +4298,51 @@ class Game {
         }
 
         this.syncInventoryUI();
+    }
+
+    // Class picker on the start screen. Locked classes show the unlock
+    // requirement and can't be selected until level 30 has been reached.
+    buildClassSelect() {
+        const container = document.getElementById('class-select');
+        if (!container) return;
+        container.innerHTML = '';
+
+        Object.keys(CLASSES).forEach(key => {
+            const c = CLASSES[key];
+            const unlocked = this.unlockedClasses.includes(key);
+            const btn = document.createElement('button');
+            btn.className = 'class-option' + (key === this.selectedClass ? ' selected' : '') + (unlocked ? '' : ' locked');
+            btn.disabled = !unlocked;
+            btn.style.borderColor = key === this.selectedClass ? c.color : '';
+
+            const title = `<span class="class-name" style="color:${c.color}">${c.icon} ${c.name}</span>`;
+            const sub = unlocked
+                ? `<span class="class-desc">${c.desc}</span>`
+                : `<span class="class-desc locked-text">🔒 레벨 ${CLASS_UNLOCK_LEVEL} 도달 시 해금</span>`;
+            btn.innerHTML = `${title}${sub}`;
+
+            if (unlocked) {
+                btn.addEventListener('click', () => {
+                    sfx.init();
+                    this.selectedClass = key;
+                    this.buildClassSelect();
+                });
+            }
+            container.appendChild(btn);
+        });
+    }
+
+    // Reaching the unlock level opens the remaining classes for future runs
+    checkClassUnlock() {
+        if (this.classUnlockNotified) return;
+        if (this.player.level >= CLASS_UNLOCK_LEVEL &&
+            this.unlockedClasses.length < Object.keys(CLASSES).length) {
+            this.unlockedClasses = Object.keys(CLASSES);
+            saveUnlockedClasses(this.unlockedClasses);
+            this.classUnlockNotified = true;
+            this.buildClassSelect();
+            this.floaters.add(this.player.x, this.player.y - 45, "새로운 클래스 해금! (마법사 · 궁수)", '#ffd700');
+        }
     }
 
     // One-time build of the skills panel: a row per accessible skill with a
