@@ -2487,6 +2487,10 @@ class Game {
         this.maxHit = 0;
         this.runStartTime = 0;
 
+        this.castTimer = 0;
+        this.castAction = null;
+        this.castName = '';
+
         this.player.setClass(this.selectedClass);
 
         this.setupUI();
@@ -2992,6 +2996,7 @@ class Game {
     // Converts held WASD keys (screen directions) into isometric world
     // movement each frame; releasing all keys stops the player.
     processKeyboardMovement() {
+        if (this.castTimer > 0) return;
         let mx = 0;
         let my = 0;
         if (this.keys.W) my -= 1;
@@ -3056,21 +3061,39 @@ class Game {
     }
 
     triggerPotion() {
-        const healed = this.player.usePotion();
-        if (healed > 0) {
-            sfx.playPotion();
-            this.floaters.add(this.player.x, this.player.y - 15, `+${healed} HP`, "#00ff00");
-            this.updateUI();
-        }
+        if (this.castTimer > 0 || !this.isGameRunning) return;
+        if (this.player.potions.length <= 0 || this.player.hp >= this.player.maxHp) return;
+        this.castTimer = 30;
+        this.castName = '체력 물약 마시는 중...';
+        const playerRef = this.player;
+        const floatersRef = this.floaters;
+        const self = this;
+        this.castAction = function() {
+            const healed = playerRef.usePotion();
+            if (healed > 0) {
+                sfx.playPotion();
+                floatersRef.add(playerRef.x, playerRef.y - 15, `+${healed} HP`, "#00ff00");
+                self.updateUI();
+            }
+        };
     }
 
     triggerManaPotion() {
-        const restored = this.player.useManaPotion();
-        if (restored > 0) {
-            sfx.playPotion();
-            this.floaters.add(this.player.x, this.player.y - 15, `+${restored} MP`, "#3a8fff");
-            this.updateUI();
-        }
+        if (this.castTimer > 0 || !this.isGameRunning) return;
+        if (this.player.manaPotions.length <= 0 || this.player.mp >= this.player.maxMp) return;
+        this.castTimer = 30;
+        this.castName = '마나 물약 마시는 중...';
+        const playerRef = this.player;
+        const floatersRef = this.floaters;
+        const self = this;
+        this.castAction = function() {
+            const restored = playerRef.useManaPotion();
+            if (restored > 0) {
+                sfx.playPotion();
+                floatersRef.add(playerRef.x, playerRef.y - 15, `+${restored} MP`, "#3a8fff");
+                self.updateUI();
+            }
+        };
     }
 
     handleLeftClick(sx, sy) {
@@ -4166,22 +4189,28 @@ class Game {
 
     triggerTownPortal() {
         if (!this.isGameRunning) return;
+        if (this.castTimer > 0) return;
         if (this.currentMap === 'town') {
             this.floaters.add(this.player.x, this.player.y - 15, "마을에서는 차원문을 열 수 없습니다.", "#00ffff");
             return;
         }
 
-        sfx.playPotion();
-        
-        // Spawn portal at player's location in dungeon
-        this.dungeonPortal = new Portal(this.player.x, this.player.y, 'town');
-        
-        // Spawn portal at town center (8, 8)
-        const tx = 8 * this.map.tileSize + this.map.tileSize / 2;
-        const ty = 8 * this.map.tileSize + this.map.tileSize / 2;
-        this.townPortal = new Portal(tx, ty, 'dungeon');
-        
-        this.floaters.add(this.player.x, this.player.y - 15, "차원문이 열렸습니다!", "#00ffff");
+        this.castTimer = 90;
+        this.castName = '차원문 여는 중...';
+        const self = this;
+        this.castAction = function() {
+            sfx.playPotion();
+
+            // Spawn portal at player's location in dungeon
+            self.dungeonPortal = new Portal(self.player.x, self.player.y, 'town');
+
+            // Spawn portal at town center (8, 8)
+            const tx = 8 * self.map.tileSize + self.map.tileSize / 2;
+            const ty = 8 * self.map.tileSize + self.map.tileSize / 2;
+            self.townPortal = new Portal(tx, ty, 'dungeon');
+
+            self.floaters.add(self.player.x, self.player.y - 15, "차원문이 열렸습니다!", "#00ffff");
+        };
     }
 
     updateUI() {
@@ -4447,6 +4476,16 @@ class Game {
         }
 
         // --- UPDATE STEP ---
+        if (this.castTimer > 0) {
+            this.player.targetX = this.player.x;
+            this.player.targetY = this.player.y;
+            this.castTimer--;
+            if (this.castTimer <= 0 && this.castAction) {
+                this.castAction();
+                this.castAction = null;
+                this.castName = '';
+            }
+        }
         this.processKeyboardMovement();
         this.player.update(this.map);
         this.camera.update(this.player.x, this.player.y);
@@ -4688,7 +4727,51 @@ class Game {
         this.floaters.render(this.ctx, this.camera, this.canvas.width, this.canvas.height);
         this.ctx.restore();
 
+        this.renderCastingBar();
         this.renderMinimap();
+    }
+
+    renderCastingBar() {
+        if (this.castTimer <= 0 || !this.castName) return;
+        const ctx = this.ctx;
+        const cw = this.canvas.width;
+        const ch = this.canvas.height;
+
+        ctx.save();
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
+        ctx.fillRect(0, 0, cw, ch);
+        ctx.restore();
+
+        const barW = 200;
+        const barH = 14;
+        const barX = (cw - barW) / 2;
+        const barY = ch - 80;
+
+        ctx.save();
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.shadowColor = 'rgba(212, 175, 55, 0.3)';
+        ctx.shadowBlur = 8;
+        ctx.fillRect(barX, barY, barW, barH);
+        ctx.shadowBlur = 0;
+
+        const progress = 1 - (this.castTimer / 90);
+        const fillW = Math.max(2, Math.floor(barW * progress));
+        const gradient = ctx.createLinearGradient(barX, barY, barX + barW, barY);
+        gradient.addColorStop(0, '#8c7853');
+        gradient.addColorStop(1, '#d4af37');
+        ctx.fillStyle = gradient;
+        ctx.fillRect(barX, barY, fillW, barH);
+
+        ctx.strokeStyle = '#d4af37';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(barX, barY, barW, barH);
+
+        ctx.fillStyle = '#e0d8cf';
+        ctx.font = '12px Inter, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.fillText(this.castName, cw / 2, barY - 4);
+        ctx.restore();
     }
 
     // Lightning arcs and whirlwind/splash rings, drawn in the zoomed world pass

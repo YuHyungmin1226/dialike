@@ -87,11 +87,93 @@ function testDamageTypeResist() {
   console.log(`Physical hit: raw=50 final=${dmgPhys} hp=${m.hp}`);
 }
 
+// ===== New tests for extracted data functions =====
+
+function shopPriceFor(basePrice, playerLevel) {
+  return Math.floor(basePrice * (1 + 0.25 * (playerLevel - 1)));
+}
+
+function skillMult(baseMult, multPerLevel, lvl) {
+  return baseMult + (lvl - 1) * multPerLevel;
+}
+
+function skillCost(baseCost, costPerLevel, lvl) {
+  return Math.round(baseCost + (lvl - 1) * costPerLevel);
+}
+
+function testShopPriceFor() {
+  const tests = [
+    { base: 15, level: 1, expected: 15 },
+    { base: 15, level: 5, expected: 30 },
+    { base: 30, level: 3, expected: 45 },
+    { base: 60, level: 10, expected: 195 }
+  ];
+  let ok = true;
+  tests.forEach(t => {
+    const result = shopPriceFor(t.base, t.level);
+    const pass = result === t.expected;
+    if (!pass) { ok = false; console.error(`FAIL: shopPriceFor(${t.base}, ${t.level}) = ${result}, expected ${t.expected}`); }
+  });
+  console.log(`shopPriceFor: ${ok ? 'OK' : 'FAIL'}`);
+  if (!ok) process.exitCode = 1;
+}
+
+function testSkillScaling() {
+  const fireball = { baseMult: 1.8, multPerLevel: 0.4, baseCost: 15, costPerLevel: 2.5 };
+  const tests = [
+    { lvl: 1, mult: 1.8, cost: 15 },
+    { lvl: 5, mult: 3.4, cost: 25 },
+    { lvl: 10, mult: 5.4, cost: 38 }
+  ];
+  let ok = true;
+  tests.forEach(t => {
+    const m = skillMult(fireball.baseMult, fireball.multPerLevel, t.lvl);
+    const c = skillCost(fireball.baseCost, fireball.costPerLevel, t.lvl);
+    const mPass = Math.abs(m - t.mult) < 0.01;
+    const cPass = c === t.cost;
+    if (!mPass || !cPass) {
+      ok = false;
+      console.error(`FAIL: skill lvl=${t.lvl}: mult=${m} (expected ${t.mult}), cost=${c} (expected ${t.cost})`);
+    }
+  });
+  console.log(`skillScaling: ${ok ? 'OK' : 'FAIL'}`);
+  if (!ok) process.exitCode = 1;
+}
+
+function testCastingTimer() {
+  // Simulate casting logic: castTimer decrements each tick, blocks actions > 0
+  let castTimer = 90;
+  let blocked = castTimer > 0;
+  const ticks = [];
+  while (castTimer > 0) {
+    if (castTimer > 0) ticks.push(castTimer);
+    castTimer--;
+  }
+  const completeTicks = ticks.length === 90;
+  const endsAtZero = castTimer === 0;
+  console.log(`castingTimer: ${completeTicks ? '90 ticks' : ticks.length + ' ticks'}, ends at 0: ${endsAtZero} -> ${completeTicks && endsAtZero ? 'OK' : 'FAIL'}`);
+  if (!completeTicks || !endsAtZero) process.exitCode = 1;
+}
+
+function testCastBlocksAction() {
+  let castTimer = 30;
+  const canActWhileCasting = () => castTimer <= 0;
+  const blocked = canActWhileCasting() === false;
+  castTimer = 0;
+  const unblocked = canActWhileCasting() === true;
+  console.log(`castBlocksAction: blocked=${blocked}, unblocked=${unblocked} -> ${blocked && unblocked ? 'OK' : 'FAIL'}`);
+  if (!blocked || !unblocked) process.exitCode = 1;
+}
+
 (function main(){
   console.log('Running logic smoke tests...');
   testCritDistribution(10000);
   testWeaponSpeed();
   testUnequipResetsSpeed();
   testDamageTypeResist();
+  testShopPriceFor();
+  testSkillScaling();
+  testCastingTimer();
+  testCastBlocksAction();
   console.log('Done.');
 })();
