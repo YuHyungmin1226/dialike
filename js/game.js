@@ -1,184 +1,11 @@
 /**
- * diaLike - Monolithic Game Controller (Self-Contained & Portable)
- * Combines Camera, Map, Player, Monsters, Audio Synth, and Loop Engine.
+ * diaLike - Game Controller
+ * Orchestrates Camera, Map, Player, Monsters, Audio, and the main loop.
+ *
+ * Dependencies: sound.js (SoundEngine), data.js (game constants & data)
  */
-
 // ==========================================
-// 1. SOUND SYNTHESIS ENGINE (Web Audio API)
-// ==========================================
-class SoundEngine {
-    constructor() {
-        this.ctx = null;
-        this.masterVolume = null;
-    }
-
-    init() {
-        if (this.ctx) return;
-        try {
-            // @ts-ignore
-            const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-            this.ctx = new AudioContextClass();
-            this.masterVolume = this.ctx.createGain();
-            this.masterVolume.gain.setValueAtTime(0.2, this.ctx.currentTime);
-            this.masterVolume.connect(this.ctx.destination);
-        } catch (e) {
-            console.warn("Web Audio API is not supported in this browser.", e);
-        }
-    }
-
-    playSlash() {
-        this.init();
-        if (!this.ctx) return;
-        const osc = this.ctx.createOscillator();
-        const gain = this.ctx.createGain();
-        osc.type = 'triangle';
-        osc.frequency.setValueAtTime(150, this.ctx.currentTime);
-        osc.frequency.exponentialRampToValueAtTime(40, this.ctx.currentTime + 0.12);
-        gain.gain.setValueAtTime(0.4, this.ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.15);
-        osc.connect(gain);
-        gain.connect(this.masterVolume);
-        osc.start();
-        osc.stop(this.ctx.currentTime + 0.16);
-    }
-
-    playHit() {
-        this.init();
-        if (!this.ctx) return;
-        const osc = this.ctx.createOscillator();
-        const gain = this.ctx.createGain();
-        osc.type = 'sawtooth';
-        osc.frequency.setValueAtTime(100, this.ctx.currentTime);
-        osc.frequency.linearRampToValueAtTime(30, this.ctx.currentTime + 0.1);
-        gain.gain.setValueAtTime(0.3, this.ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.12);
-        osc.connect(gain);
-        gain.connect(this.masterVolume);
-        osc.start();
-        osc.stop(this.ctx.currentTime + 0.13);
-    }
-
-    playFireball() {
-        this.init();
-        if (!this.ctx) return;
-        const osc = this.ctx.createOscillator();
-        const gain = this.ctx.createGain();
-        osc.type = 'sawtooth';
-        osc.frequency.setValueAtTime(80, this.ctx.currentTime);
-        osc.frequency.exponentialRampToValueAtTime(320, this.ctx.currentTime + 0.1);
-        osc.frequency.exponentialRampToValueAtTime(120, this.ctx.currentTime + 0.25);
-        gain.gain.setValueAtTime(0.3, this.ctx.currentTime);
-        gain.gain.linearRampToValueAtTime(0.1, this.ctx.currentTime + 0.1);
-        gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.3);
-        osc.connect(gain);
-        gain.connect(this.masterVolume);
-        osc.start();
-        osc.stop(this.ctx.currentTime + 0.35);
-    }
-
-    playPotion() {
-        this.init();
-        if (!this.ctx) return;
-        const now = this.ctx.currentTime;
-        const notes = [200, 300, 450, 600];
-        notes.forEach((freq, index) => {
-            const osc = this.ctx.createOscillator();
-            const gain = this.ctx.createGain();
-            osc.type = 'sine';
-            osc.frequency.setValueAtTime(freq, now + index * 0.06);
-            gain.gain.setValueAtTime(0, now + index * 0.06);
-            gain.gain.linearRampToValueAtTime(0.2, now + index * 0.06 + 0.02);
-            gain.gain.exponentialRampToValueAtTime(0.001, now + index * 0.06 + 0.08);
-            osc.connect(gain);
-            gain.connect(this.masterVolume);
-            osc.start(now + index * 0.06);
-            osc.stop(now + index * 0.06 + 0.1);
-        });
-    }
-
-    playMonsterDeath() {
-        this.init();
-        if (!this.ctx) return;
-        const osc = this.ctx.createOscillator();
-        const gain = this.ctx.createGain();
-        osc.type = 'sawtooth';
-        osc.frequency.setValueAtTime(180, this.ctx.currentTime);
-        osc.frequency.linearRampToValueAtTime(50, this.ctx.currentTime + 0.4);
-        gain.gain.setValueAtTime(0.25, this.ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.4);
-        osc.connect(gain);
-        gain.connect(this.masterVolume);
-        osc.start();
-        osc.stop(this.ctx.currentTime + 0.45);
-    }
-
-    playLevelUp() {
-        this.init();
-        if (!this.ctx) return;
-        const now = this.ctx.currentTime;
-        const notes = [261.63, 329.63, 392.00, 523.25];
-        notes.forEach((freq, index) => {
-            const osc = this.ctx.createOscillator();
-            const gain = this.ctx.createGain();
-            osc.type = 'triangle';
-            osc.frequency.setValueAtTime(freq, now + index * 0.12);
-            gain.gain.setValueAtTime(0, now + index * 0.12);
-            gain.gain.linearRampToValueAtTime(0.25, now + index * 0.12 + 0.03);
-            gain.gain.exponentialRampToValueAtTime(0.01, now + index * 0.12 + 0.35);
-            osc.connect(gain);
-            gain.connect(this.masterVolume);
-            osc.start(now + index * 0.12);
-            osc.stop(now + index * 0.12 + 0.4);
-        });
-
-        setTimeout(() => {
-            const finalOsc = this.ctx.createOscillator();
-            const finalGain = this.ctx.createGain();
-            finalOsc.type = 'sine';
-            finalOsc.frequency.setValueAtTime(523.25, this.ctx.currentTime);
-            finalGain.gain.setValueAtTime(0.2, this.ctx.currentTime);
-            finalGain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.8);
-            finalOsc.connect(finalGain);
-            finalGain.connect(this.masterVolume);
-            finalOsc.start();
-            finalOsc.stop(this.ctx.currentTime + 0.85);
-        }, 360);
-    }
-
-    playBossSpawn() {
-        this.init();
-        if (!this.ctx) return;
-        const now = this.ctx.currentTime;
-
-        const osc = this.ctx.createOscillator();
-        const gain = this.ctx.createGain();
-        osc.type = 'sawtooth';
-        osc.frequency.setValueAtTime(70, now);
-        osc.frequency.linearRampToValueAtTime(25, now + 1.2);
-        gain.gain.setValueAtTime(0.4, now);
-        gain.gain.exponentialRampToValueAtTime(0.001, now + 1.4);
-        osc.connect(gain);
-        gain.connect(this.masterVolume);
-        osc.start();
-        osc.stop(now + 1.5);
-
-        const osc2 = this.ctx.createOscillator();
-        const gain2 = this.ctx.createGain();
-        osc2.type = 'square';
-        osc2.frequency.setValueAtTime(110, now + 0.1);
-        osc2.frequency.linearRampToValueAtTime(55, now + 1.0);
-        gain2.gain.setValueAtTime(0.12, now + 0.1);
-        gain2.gain.exponentialRampToValueAtTime(0.001, now + 1.2);
-        osc2.connect(gain2);
-        gain2.connect(this.masterVolume);
-        osc2.start(now + 0.1);
-        osc2.stop(now + 1.3);
-    }
-}
-const sfx = new SoundEngine();
-
-// ==========================================
-// 2. CAMERA ENGINE
+// 1. CAMERA ENGINE
 // ==========================================
 class Camera {
     constructor(x = 0, y = 0) {
@@ -201,7 +28,7 @@ class Camera {
 }
 
 // ==========================================
-// 3. ISOMETRIC TILE MAP ENGINE
+// 2. ISOMETRIC TILE MAP ENGINE
 // ==========================================
 class TileMap {
     constructor(tileSize = 64, type = 'dungeon', floor = 1) {
@@ -843,7 +670,7 @@ TileMap.PALETTES = {
 };
 
 // ==========================================
-// 4. PLAYER HERO ENGINE
+// 3. PLAYER HERO ENGINE
 // ==========================================
 class Player {
     constructor(x, y) {
@@ -1314,7 +1141,7 @@ class Player {
 }
 
 // ==========================================
-// 5. SKELETON MONSTER & COMBAT SYSTEM
+// 4. SKELETON MONSTER & COMBAT SYSTEM
 // ==========================================
 class Monster {
     constructor(x, y, level = 1, rank = 'normal', kind = 'skeleton', bossType = 'butcher') {
@@ -1816,7 +1643,7 @@ class Monster {
 }
 
 // ==========================================
-// 6. FIREBALL PROJECTILE ENGINE
+// 5. FIREBALL PROJECTILE ENGINE
 // ==========================================
 class Projectile {
     constructor(x, y, tx, ty, damage = 25, level = 1, type = 'physical', skillKey = 'fireball') {
@@ -2553,7 +2380,7 @@ Prop.RENDERERS = {
 };
 
 // ==========================================
-// 7. FLOATING TEXT EFFECTS ENGINE
+// 6. FLOATING TEXT EFFECTS ENGINE
 // ==========================================
 class FloaterManager {
     constructor() {
@@ -2606,130 +2433,6 @@ class FloaterManager {
         }
         ctx.restore();
     }
-}
-
-// ==========================================
-// 8. MAIN GAME CONTROLLER
-// ==========================================
-const SPAWN_INTERVAL = 180;
-const MAX_MONSTERS = 10;
-const ITEM_POOL = [
-    { name: '철제 검', type: 'weapon', slot: 'weapon', stat: '+5 공격력', value: 5, speed: 1.0, rarity: 'normal', color: '#b0a89f', reqLevel: 1 },
-    { name: '룬 단검', type: 'weapon', slot: 'weapon', stat: '+12 공격력', value: 12, speed: 0.8, rarity: 'normal', color: '#b0a89f', reqLevel: 1 },
-    { name: '디아블로의 낫', type: 'weapon', slot: 'weapon', stat: '+30 공격력', value: 30, speed: 1.2, rarity: 'unique', color: '#ff5500', reqLevel: 15 },
-    { name: '가죽 방패', type: 'armor', slot: 'shield', stat: '+10 최대 HP', value: 10, rarity: 'normal', color: '#b0a89f', reqLevel: 1 },
-    { name: '성기사의 방패', type: 'armor', slot: 'shield', stat: '+40 최대 HP', value: 40, rarity: 'unique', color: '#ff5500', reqLevel: 12 },
-    { name: '강철 투구', type: 'armor', slot: 'helmet', stat: '+25 최대 HP', value: 25, rarity: 'normal', color: '#b0a89f', reqLevel: 1 },
-    { name: '가죽 갑옷', type: 'armor', slot: 'chest', stat: '+15 최대 HP', value: 15, rarity: 'normal', color: '#b0a89f', reqLevel: 1 },
-    { name: '대천사의 로브', type: 'armor', slot: 'chest', stat: '+50 최대 MP', value: 50, rarity: 'unique', color: '#ff5500', reqLevel: 18 },
-    { name: '체력 물약', type: 'potion', slot: 'potion', stat: '사용 시 체력 35% 회복', value: 35, rarity: 'normal', color: '#00ff00', reqLevel: 1 },
-    { name: '마나 물약', type: 'potion', slot: 'potion', subtype: 'mana', stat: '사용 시 마나 50% 회복', value: 50, rarity: 'normal', color: '#3a8fff', reqLevel: 1 }
-];
-
-// Shop stock: potion heal values are percentages of max HP/MP; prices are
-// base values that scale with player level (gold sink)
-const SHOP_ITEMS = [
-    { name: '소형 체력 물약', value: 25, basePrice: 15 },
-    { name: '하급 체력 물약', value: 35, basePrice: 30 },
-    { name: '일반 체력 물약', value: 50, basePrice: 60 },
-    { name: '대형 체력 물약', value: 70, basePrice: 125 },
-    { name: '하급 마나 물약', value: 40, basePrice: 25, subtype: 'mana' },
-    { name: '일반 마나 물약', value: 70, basePrice: 60, subtype: 'mana' }
-];
-const GAMBLE_BASE_PRICE = 150;
-
-function shopPriceFor(basePrice, playerLevel) {
-    return Math.floor(basePrice * (1 + 0.25 * (playerLevel - 1)));
-}
-
-const PREFIXES = [
-    { name: '날카로운', slot: 'weapon', value: 3 },
-    { name: '치명적인', slot: 'weapon', value: 6 },
-    { name: '단단한', slot: 'shield|helmet|chest', value: 4 },
-    { name: '두꺼운', slot: 'shield|helmet|chest', value: 8 },
-    { name: '빛나는', slot: 'weapon|shield|helmet|chest', value: 5 },
-    { name: '축복받은', slot: 'weapon|shield|helmet|chest', value: 10 },
-    { name: '신성한', slot: 'weapon|shield|helmet|chest', value: 15 }
-];
-
-const SUFFIXES = [
-    { name: '의 분노', slot: 'weapon', value: 4, statType: 'ATK' },
-    { name: '의 파괴자', slot: 'weapon', value: 10, statType: 'ATK' },
-    { name: '의 수호', slot: 'shield|helmet|chest', value: 5, statType: 'HP' },
-    { name: '의 생명', slot: 'shield|helmet|chest', value: 12, statType: 'HP' },
-    { name: '의 마나', slot: 'helmet|chest', value: 10, statType: 'MP' },
-    { name: '의 힘', slot: 'weapon|shield|helmet|chest', value: 6, statType: 'HP' },
-    { name: '의 마법사', slot: 'weapon|helmet|chest', value: 1, statType: 'SKILL_FIREBALL' }
-];
-
-const GEM_TYPES = [
-    { name: '루비', color: '#ff4466', effect: { hp: 25 }, stat: '소켓 장착 시: +25 최대 HP' },
-    { name: '사파이어', color: '#3a8fff', effect: { mp: 20 }, stat: '소켓 장착 시: +20 최대 MP' },
-    { name: '에메랄드', color: '#2ecc71', effect: { atk: 5 }, stat: '소켓 장착 시: +5 공격력' }
-];
-
-const BOSS_FLOOR_INTERVAL = 3; // every 3rd floor is a boss floor
-
-// Data-driven active skills. Damage scales off the player's ATK; mana cost and
-// multiplier grow per skill level. `kind` decides the delivery:
-//   projectile  - travels and hits one target (fire/cold), cold also slows
-//   chain       - instant bolt that jumps between nearby enemies (lightning)
-//   melee_aoe   - instant hit on every enemy around the player (physical)
-const SKILLS = {
-    fireball:  { name: '화염구', icon: '🔥', kind: 'projectile', damageType: 'fire',
-                 baseMult: 1.8, multPerLevel: 0.4, baseCost: 15, costPerLevel: 2.5,
-                 maxLevel: 20, color: '#ff4500', splash: 40 },
-    frostbolt: { name: '냉기 화살', icon: '❄', kind: 'projectile', damageType: 'cold',
-                 baseMult: 1.3, multPerLevel: 0.28, baseCost: 12, costPerLevel: 2,
-                 maxLevel: 20, color: '#5bc8ff', slow: 110 },
-    chain:     { name: '연쇄 번개', icon: '⚡', kind: 'chain', damageType: 'lightning',
-                 baseMult: 1.4, multPerLevel: 0.30, baseCost: 18, costPerLevel: 3,
-                 maxLevel: 20, color: '#b98bff', jumps: 3, jumpRange: 170 },
-    whirlwind: { name: '회전 베기', icon: '🌀', kind: 'melee_aoe', damageType: 'physical',
-                 baseMult: 1.1, multPerLevel: 0.22, baseCost: 14, costPerLevel: 2,
-                 maxLevel: 20, color: '#ffe6b4', radius: 90 }
-};
-function skillMult(key, lvl) { const s = SKILLS[key]; return s.baseMult + (lvl - 1) * s.multPerLevel; }
-function skillCost(key, lvl) { const s = SKILLS[key]; return Math.round(s.baseCost + (lvl - 1) * s.costPerLevel); }
-
-// Character classes. 전사 is available from the start; reaching level 30 with
-// any class permanently unlocks 마법사 and 궁수 (stored in localStorage, a meta
-// unlock — runs themselves still wipe on death).
-const CLASSES = {
-    warrior: {
-        name: '전사', icon: '⚔', color: '#d9534f',
-        desc: '높은 체력과 근접 전투. 회전 베기로 적을 쓸어버린다.',
-        baseAtk: 18, baseMaxHp: 140, baseMaxMp: 30,
-        critChance: 0.08, critMultiplier: 1.9, attackDuration: 18,
-        skillAccess: ['whirlwind', 'fireball'], startSkill: { whirlwind: 1 }, activeSkill: 'whirlwind'
-    },
-    mage: {
-        name: '마법사', icon: '🔮', color: '#5b8dff',
-        desc: '낮은 체력, 강력한 원소 마법과 풍부한 마나.',
-        baseAtk: 12, baseMaxHp: 80, baseMaxMp: 95,
-        critChance: 0.05, critMultiplier: 1.75, attackDuration: 22,
-        skillAccess: ['fireball', 'frostbolt', 'chain'], startSkill: { fireball: 1 }, activeSkill: 'fireball'
-    },
-    archer: {
-        name: '궁수', icon: '🏹', color: '#5fd35f',
-        desc: '균형 잡힌 능력치, 빠른 공격과 냉기 견제.',
-        baseAtk: 15, baseMaxHp: 100, baseMaxMp: 55,
-        critChance: 0.12, critMultiplier: 1.8, attackDuration: 14,
-        skillAccess: ['frostbolt', 'chain', 'fireball'], startSkill: { frostbolt: 1 }, activeSkill: 'frostbolt'
-    }
-};
-const CLASS_UNLOCK_LEVEL = 30;
-const UNLOCK_STORAGE_KEY = 'dialike_unlocked_classes';
-
-function loadUnlockedClasses() {
-    try {
-        const stored = JSON.parse(localStorage.getItem(UNLOCK_STORAGE_KEY));
-        if (Array.isArray(stored) && stored.length) return stored.filter(k => CLASSES[k]);
-    } catch (e) { /* ignore corrupt/blocked storage */ }
-    return ['warrior'];
-}
-function saveUnlockedClasses(list) {
-    try { localStorage.setItem(UNLOCK_STORAGE_KEY, JSON.stringify(list)); } catch (e) { /* ignore */ }
 }
 
 class Game {
