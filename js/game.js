@@ -2481,9 +2481,6 @@ class Game {
         this.dragSrcIdx = null; // source slot index during an inventory drag
         this.keys = {};
         this.movingByKeys = false;
-        this.unlockedClasses = loadUnlockedClasses();
-        this.selectedClass = this.unlockedClasses[0];
-        this.classUnlockNotified = false;
         this.maxHit = 0;
         this.runStartTime = 0;
 
@@ -2491,7 +2488,7 @@ class Game {
         this.castAction = null;
         this.castName = '';
 
-        this.player.setClass(this.selectedClass);
+        this.player.setClass('warrior');
 
         this.setupUI();
         this.setupInputs();
@@ -2612,15 +2609,13 @@ class Game {
             });
         }
 
-        this.buildClassSelect();
         this.buildSkillsPanel();
 
         const startBtn = document.getElementById('start-game-btn');
         const guidePanel = document.getElementById('guide-panel');
         startBtn.addEventListener('click', () => {
             sfx.init();
-            // Lock in the chosen class for this run
-            this.player.setClass(this.selectedClass);
+            this.player.setClass('warrior');
             this.player.recalculateStats(this.inventory);
             this.buildSkillsPanel();
             this.updateUI();
@@ -3881,7 +3876,6 @@ class Game {
         if (isLeveledUp) {
             sfx.playLevelUp();
             this.triggerLevelUpBanner();
-            this.checkClassUnlock();
         }
 
         this.player.recalculateStats(this.inventory);
@@ -4294,51 +4288,6 @@ class Game {
         }
 
         this.syncInventoryUI();
-    }
-
-    // Class picker on the start screen. Locked classes show the unlock
-    // requirement and can't be selected until level 30 has been reached.
-    buildClassSelect() {
-        const container = document.getElementById('class-select');
-        if (!container) return;
-        container.innerHTML = '';
-
-        Object.keys(CLASSES).forEach(key => {
-            const c = CLASSES[key];
-            const unlocked = this.unlockedClasses.includes(key);
-            const btn = document.createElement('button');
-            btn.className = 'class-option' + (key === this.selectedClass ? ' selected' : '') + (unlocked ? '' : ' locked');
-            btn.disabled = !unlocked;
-            btn.style.borderColor = key === this.selectedClass ? c.color : '';
-
-            const title = `<span class="class-name" style="color:${c.color}">${c.icon} ${c.name}</span>`;
-            const sub = unlocked
-                ? `<span class="class-desc">${c.desc}</span>`
-                : `<span class="class-desc locked-text">🔒 레벨 ${CLASS_UNLOCK_LEVEL} 도달 시 해금</span>`;
-            btn.innerHTML = `${title}${sub}`;
-
-            if (unlocked) {
-                btn.addEventListener('click', () => {
-                    sfx.init();
-                    this.selectedClass = key;
-                    this.buildClassSelect();
-                });
-            }
-            container.appendChild(btn);
-        });
-    }
-
-    // Reaching the unlock level opens the remaining classes for future runs
-    checkClassUnlock() {
-        if (this.classUnlockNotified) return;
-        if (this.player.level >= CLASS_UNLOCK_LEVEL &&
-            this.unlockedClasses.length < Object.keys(CLASSES).length) {
-            this.unlockedClasses = Object.keys(CLASSES);
-            saveUnlockedClasses(this.unlockedClasses);
-            this.classUnlockNotified = true;
-            this.buildClassSelect();
-            this.floaters.add(this.player.x, this.player.y - 45, "새로운 클래스 해금! (마법사 · 궁수)", '#ffd700');
-        }
     }
 
     // One-time build of the skills panel: a row per accessible skill with a

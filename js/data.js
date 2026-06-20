@@ -88,32 +88,5 @@ const CLASSES = {
         baseAtk: 18, baseMaxHp: 140, baseMaxMp: 30,
         critChance: 0.08, critMultiplier: 1.9, attackDuration: 18,
         skillAccess: ['whirlwind', 'fireball'], startSkill: { whirlwind: 1 }, activeSkill: 'whirlwind'
-    },
-    mage: {
-        name: '마법사', icon: '🔮', color: '#5b8dff',
-        desc: '낮은 체력, 강력한 원소 마법과 풍부한 마나.',
-        baseAtk: 12, baseMaxHp: 80, baseMaxMp: 95,
-        critChance: 0.05, critMultiplier: 1.75, attackDuration: 22,
-        skillAccess: ['fireball', 'frostbolt', 'chain'], startSkill: { fireball: 1 }, activeSkill: 'fireball'
-    },
-    archer: {
-        name: '궁수', icon: '🏹', color: '#5fd35f',
-        desc: '균형 잡힌 능력치, 빠른 공격과 냉기 견제.',
-        baseAtk: 15, baseMaxHp: 100, baseMaxMp: 55,
-        critChance: 0.12, critMultiplier: 1.8, attackDuration: 14,
-        skillAccess: ['frostbolt', 'chain', 'fireball'], startSkill: { frostbolt: 1 }, activeSkill: 'frostbolt'
     }
 };
-const CLASS_UNLOCK_LEVEL = 30;
-const UNLOCK_STORAGE_KEY = 'dialike_unlocked_classes';
-
-function loadUnlockedClasses() {
-    try {
-        const stored = JSON.parse(localStorage.getItem(UNLOCK_STORAGE_KEY));
-        if (Array.isArray(stored) && stored.length) return stored.filter(k => CLASSES[k]);
-    } catch (e) { /* ignore corrupt/blocked storage */ }
-    return ['warrior'];
-}
-function saveUnlockedClasses(list) {
-    try { localStorage.setItem(UNLOCK_STORAGE_KEY, JSON.stringify(list)); } catch (e) { /* ignore */ }
-}
