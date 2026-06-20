@@ -7,6 +7,9 @@
 // ==========================================
 // 1. CAMERA ENGINE
 // ==========================================
+// WorldViewSystem (Global reference to the utility class)
+// The geometry logic has been moved entirely to this system for clean separation of concerns.
+
 class Camera {
     constructor(x = 0, y = 0) {
         this.x = x;
@@ -20,10 +23,8 @@ class Camera {
     }
 
     getIsoOffset() {
-        return {
-            x: this.x - this.y,
-            y: (this.x + this.y) * 0.5
-        };
+        // Use the centralized WorldViewSystem for geometry calculation
+        return WorldViewSystem.worldToIso(this.x, this.y);
     }
 }
 
@@ -73,10 +74,7 @@ class TileMap {
     }
 
     tileToWorld(c, r) {
-        return {
-            x: c * this.tileSize + this.tileSize / 2,
-            y: r * this.tileSize + this.tileSize / 2
-        };
+        return WorldViewSystem.tileToWorld(c, r, this.tileSize);
     }
 
     // Deterministic per-cell hash so tile decoration stays stable every frame
@@ -404,17 +402,11 @@ class TileMap {
     }
 
     worldToIso(x, y) {
-        return {
-            x: x - y,
-            y: (x + y) * 0.5
-        };
+        return WorldViewSystem.worldToIso(x, y);
     }
 
     isoToWorld(isoX, isoY) {
-        return {
-            x: (isoX + 2 * isoY) * 0.5,
-            y: (2 * isoY - isoX) * 0.5
-        };
+        return WorldViewSystem.isoToWorld(isoX, isoY);
     }
 
     isSolid(x, y) {
@@ -512,7 +504,7 @@ class TileMap {
                 const cartX = c * this.tileSize + this.tileSize / 2;
                 const cartY = r * this.tileSize + this.tileSize / 2;
 
-                const isoPos = this.worldToIso(cartX, cartY);
+                const isoPos = WorldViewSystem.worldToIso(cartX, cartY);
                 const screenX = isoPos.x - isoCam.x + halfWidth;
                 const screenY = isoPos.y - isoCam.y + halfHeight;
 
@@ -591,7 +583,7 @@ class TileMap {
         ctx.closePath();
         ctx.fill();
 
-        // Mortar lines give the flat faces a rough brick texture
+        // Mortar lines
         ctx.strokeStyle = 'rgba(0, 0, 0, 0.28)';
         ctx.lineWidth = 1;
         ctx.beginPath();
@@ -602,7 +594,6 @@ class TileMap {
             ctx.moveTo(screenX, screenY + w / 2 - heightOffset + dy);
             ctx.lineTo(screenX + w, screenY - heightOffset + dy);
         }
-        // one vertical seam per face, position varied by cell hash
         const seamL = 0.25 + (hash % 7) * 0.07;
         ctx.moveTo(screenX - w + w * seamL, screenY - heightOffset + (w / 2) * seamL);
         ctx.lineTo(screenX - w + w * seamL, screenY - heightOffset + (w / 2) * seamL + heightOffset);
@@ -713,6 +704,7 @@ class Player {
         this.state = 'idle';
         this.direction = 0;
         this.path = []; // queued A* waypoints after the current target
+        this.movement = null; // assigned by GameController: PlayerMovementSystem
 
         this.animTimer = 0;
         this.animSpeed = 0.15;
@@ -759,19 +751,26 @@ class Player {
     }
 
     moveTo(tx, ty) {
-        if (this.state === 'attack') return;
-        this.path = [];
-        this.targetX = tx;
-        this.targetY = ty;
+        if (this.movement) {
+            this.movement.moveTo(tx, ty);
+        } else {
+            if (this.state === 'attack') return;
+            this.path = [];
+            this.targetX = tx;
+            this.targetY = ty;
+        }
     }
 
-    // Follow A* waypoints: head to the first point, queue the rest
     setPath(points) {
-        if (this.state === 'attack') return;
-        if (!points || points.length === 0) return;
-        this.targetX = points[0].x;
-        this.targetY = points[0].y;
-        this.path = points.slice(1);
+        if (this.movement) {
+            this.movement.setPath(points);
+        } else {
+            if (this.state === 'attack') return;
+            if (!points || points.length === 0) return;
+            this.targetX = points[0].x;
+            this.targetY = points[0].y;
+            this.path = points.slice(1);
+        }
     }
 
     meleeAttack() {
@@ -915,44 +914,8 @@ class Player {
             return;
         }
 
-        const dx = this.targetX - this.x;
-        const dy = this.targetY - this.y;
-        const dist = Math.hypot(dx, dy);
-
-        if (dist > 5) {
-            this.state = 'walk';
-            this.animTimer += this.animSpeed;
-
-            const vx = (dx / dist) * this.speed;
-            const vy = (dy / dist) * this.speed;
-
-            let angle = Math.atan2(vy, vx);
-            if (angle < 0) angle += Math.PI * 2;
-            
-            this.direction = Math.round(angle / (Math.PI / 4)) % 8;
-
-            const newX = this.x + vx;
-            const newY = this.y + vy;
-
-            if (!map.isSolid(newX, this.y)) {
-                this.x = newX;
-            } else {
-                this.targetX = this.x;
-            }
-
-            if (!map.isSolid(this.x, newY)) {
-                this.y = newY;
-            } else {
-                this.targetY = this.y;
-            }
-        } else if (this.path.length > 0) {
-            // reached the current waypoint; advance along the path
-            const next = this.path.shift();
-            this.targetX = next.x;
-            this.targetY = next.y;
-        } else {
-            this.state = 'idle';
-            this.animTimer = 0;
+        if (this.movement) {
+            this.movement.update();
         }
 
         // Mana regen scales with level so fireball cost growth stays usable
@@ -2480,7 +2443,6 @@ class Game {
         this.selectedGemIdx = null;
         this.dragSrcIdx = null; // source slot index during an inventory drag
         this.keys = {};
-        this.movingByKeys = false;
         this.maxHit = 0;
         this.runStartTime = 0;
 
@@ -2492,6 +2454,11 @@ class Game {
 
         this.setupUI();
         this.setupInputs();
+
+        this.combat = new CombatSystem(this);
+        this.monsterFactory = new MonsterFactory(this);
+        this.playerMovement = new PlayerMovementSystem(this.player, this.map);
+        this.player.movement = this.playerMovement;
 
         this.player.recalculateStats(this.inventory);
         this.updateUI();
@@ -2991,68 +2958,15 @@ class Game {
     // Converts held WASD keys (screen directions) into isometric world
     // movement each frame; releasing all keys stops the player.
     processKeyboardMovement() {
-        if (this.castTimer > 0) return;
-        let mx = 0;
-        let my = 0;
-        if (this.keys.W) my -= 1;
-        if (this.keys.S) my += 1;
-        if (this.keys.A) mx -= 1;
-        if (this.keys.D) mx += 1;
-
-        if (mx !== 0 || my !== 0) {
-            let wx = (mx + 2 * my) * 0.5;
-            let wy = (2 * my - mx) * 0.5;
-            const len = Math.hypot(wx, wy);
-            wx /= len;
-            wy /= len;
-            this.player.moveTo(this.player.x + wx * 50, this.player.y + wy * 50);
-            this.movingByKeys = true;
-        } else if (this.movingByKeys) {
-            this.player.moveTo(this.player.x, this.player.y);
-            this.movingByKeys = false;
-        }
+        this.playerMovement.processKeyboardMovement(this.keys);
     }
 
-    // Click movement: walk straight when the line is clear, otherwise follow
-    // A* waypoints smoothed by line-of-sight string pulling
     moveTowards(tx, ty) {
-        if (this.hasLineOfSight(this.player.x, this.player.y, tx, ty)) {
-            this.player.moveTo(tx, ty);
-            return;
-        }
-
-        const path = this.map.findPath(this.player.x, this.player.y, tx, ty);
-        if (!path || path.length === 0) {
-            this.player.moveTo(tx, ty);
-            return;
-        }
-        if (!this.map.isSolid(tx, ty)) {
-            path.push({ x: tx, y: ty });
-        }
-
-        const smoothed = [];
-        let anchor = { x: this.player.x, y: this.player.y };
-        for (let i = 0; i < path.length; i++) {
-            const isLast = i === path.length - 1;
-            if (!isLast && this.hasLineOfSight(anchor.x, anchor.y, path[i + 1].x, path[i + 1].y)) {
-                continue; // this waypoint can be skipped entirely
-            }
-            smoothed.push(path[i]);
-            anchor = path[i];
-        }
-        this.player.setPath(smoothed);
+        this.playerMovement.moveTowards(tx, ty);
     }
 
     hasLineOfSight(x0, y0, x1, y1) {
-        const dist = Math.hypot(x1 - x0, y1 - y0);
-        const steps = Math.ceil(dist / 12);
-        for (let i = 1; i <= steps; i++) {
-            const t = i / steps;
-            if (this.map.isSolid(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t)) {
-                return false;
-            }
-        }
-        return true;
+        return this.playerMovement.hasLineOfSight(x0, y0, x1, y1);
     }
 
     triggerPotion() {
@@ -3137,7 +3051,7 @@ class Game {
         if (clickedMonster) {
             const dist = Math.hypot(clickedMonster.x - this.player.x, clickedMonster.y - this.player.y);
             if (dist <= this.player.attackRange) {
-                this.attackMonster(clickedMonster);
+                this.combat.attackMonster(clickedMonster);
             } else {
                 this.moveTowards(clickedMonster.x, clickedMonster.y);
             }
@@ -3146,131 +3060,9 @@ class Game {
         }
     }
 
-    attackMonster(monster) {
-        const dx = monster.x - this.player.x;
-        const dy = monster.y - this.player.y;
-        let angle = Math.atan2(dy, dx);
-        if (angle < 0) angle += Math.PI * 2;
-        this.player.direction = Math.round(angle / (Math.PI / 4)) % 8;
-
-        if (this.player.meleeAttack()) {
-            sfx.playSlash();
-
-            // crit calculation
-            const baseDamage = this.player.atk;
-            const isCrit = Math.random() < (this.player.critChance || 0);
-            let damage = baseDamage;
-            if (isCrit) {
-                damage = Math.floor(damage * (this.player.critMultiplier || 1));
-                this.floaters.add(monster.x, monster.y - 10, 'CRIT!', '#ffdd55');
-            }
-
-            const expGained = monster.takeDamage(damage, this.floaters, 'physical');
-            if (expGained > 0) {
-                this.handleMonsterKill(monster);
-            }
-            this.updateUI();
-        }
-    }
-
     handleRightClick(sx, sy) {
         const cartDest = this.screenToCartesian(sx, sy);
-        this.castSkill(this.player.activeSkill, cartDest.x, cartDest.y);
-    }
-
-    castSkill(key, tx, ty) {
-        if (this.currentMap === 'town') {
-            this.floaters.add(this.player.x, this.player.y - 15, "마을은 안전지대입니다.", "#00ffff");
-            return;
-        }
-        const def = SKILLS[key];
-        const lvl = this.player.effectiveSkillLevel(key);
-        if (!def || lvl === 0) {
-            this.floaters.add(this.player.x, this.player.y - 15, "미습득 스킬!", "#888888");
-            return;
-        }
-
-        const cost = skillCost(key, lvl);
-        if (this.player.mp < cost) {
-            this.floaters.add(this.player.x, this.player.y - 15, "마나 부족!", "#55aaff");
-            return;
-        }
-        this.player.mp -= cost;
-
-        // face the target
-        let angle = Math.atan2(ty - this.player.y, tx - this.player.x);
-        if (angle < 0) angle += Math.PI * 2;
-        this.player.direction = Math.round(angle / (Math.PI / 4)) % 8;
-
-        const damage = Math.floor(this.player.atk * skillMult(key, lvl));
-
-        if (def.kind === 'projectile') {
-            sfx.playFireball();
-            this.projectiles.push(new Projectile(
-                this.player.x, this.player.y, tx, ty, damage, lvl, def.damageType, key
-            ));
-        } else if (def.kind === 'chain') {
-            this.castChainLightning(damage, def, lvl);
-        } else if (def.kind === 'melee_aoe') {
-            this.castWhirlwind(damage, def);
-        }
-
-        this.player.state = 'attack';
-        this.player.attackTimer = 12;
-        this.updateUI();
-    }
-
-    castChainLightning(baseDmg, def, lvl) {
-        const maxJumps = def.jumps + Math.floor((lvl - 1) / 5);
-        const hitSet = new Set();
-        let from = { x: this.player.x, y: this.player.y };
-        const segments = [{ x: from.x, y: from.y }];
-        let dmg = baseDmg;
-
-        for (let j = 0; j <= maxJumps; j++) {
-            const range = j === 0 ? 600 : def.jumpRange;
-            let target = null;
-            let best = range;
-            for (const m of this.monsters) {
-                if (m.state === 'death' || hitSet.has(m)) continue;
-                const d = Math.hypot(m.x - from.x, m.y - from.y);
-                if (d <= best) { best = d; target = m; }
-            }
-            if (!target) break;
-
-            hitSet.add(target);
-            segments.push({ x: target.x, y: target.y });
-            const exp = target.takeDamage(Math.floor(dmg), this.floaters, def.damageType);
-            if (exp > 0) this.handleMonsterKill(target);
-            from = { x: target.x, y: target.y };
-            dmg *= 0.8; // falloff per jump
-        }
-
-        if (segments.length > 1) {
-            sfx.playFireball();
-            this.effects.push({ type: 'lightning', segments, color: def.color, life: 12, maxLife: 12 });
-        } else {
-            this.floaters.add(this.player.x, this.player.y - 15, "대상 없음", def.color);
-        }
-        this.updateUI();
-    }
-
-    castWhirlwind(dmg, def) {
-        sfx.playSlash();
-        for (const m of this.monsters) {
-            if (m.state === 'death') continue;
-            if (Math.hypot(m.x - this.player.x, m.y - this.player.y) <= def.radius + m.radius) {
-                let d = dmg;
-                if (Math.random() < (this.player.critChance || 0)) {
-                    d = Math.floor(d * (this.player.critMultiplier || 1));
-                    this.floaters.add(m.x, m.y - 10, 'CRIT!', '#ffdd55');
-                }
-                const exp = m.takeDamage(d, this.floaters, def.damageType);
-                if (exp > 0) this.handleMonsterKill(m);
-            }
-        }
-        this.effects.push({ type: 'whirlwind', x: this.player.x, y: this.player.y, radius: def.radius, color: def.color, life: 14, maxLife: 14 });
-        this.updateUI();
+        this.combat.castSkill(this.player.activeSkill, cartDest.x, cartDest.y);
     }
 
     selectSkill(index) {
@@ -3286,25 +3078,10 @@ class Game {
         this.updateUI();
     }
 
-    findNearestMonster(maxDist) {
-        if (this.currentMap !== 'dungeon') return null;
-        let nearest = null;
-        let nearestDist = maxDist;
-        for (const m of this.monsters) {
-            if (m.state === 'death') continue;
-            const d = Math.hypot(m.x - this.player.x, m.y - this.player.y);
-            if (d <= nearestDist) {
-                nearestDist = d;
-                nearest = m;
-            }
-        }
-        return nearest;
-    }
-
     triggerMeleeKey() {
-        const target = this.findNearestMonster(this.player.attackRange);
+        const target = this.combat.findNearestMonster(this.player.attackRange);
         if (target) {
-            this.attackMonster(target);
+            this.combat.attackMonster(target);
         } else if (this.player.meleeAttack()) {
             sfx.playSlash();
         }
@@ -3314,15 +3091,15 @@ class Game {
         const key = this.player.activeSkill;
         const def = SKILLS[key];
         if (def && def.kind === 'melee_aoe') {
-            this.castSkill(key, this.player.x, this.player.y);
+            this.combat.castSkill(key, this.player.x, this.player.y);
             return;
         }
-        const target = this.findNearestMonster(600);
+        const target = this.combat.findNearestMonster(600);
         if (target) {
-            this.castSkill(key, target.x, target.y);
+            this.combat.castSkill(key, target.x, target.y);
         } else {
             const angle = this.player.direction * (Math.PI / 4);
-            this.castSkill(
+            this.combat.castSkill(
                 key,
                 this.player.x + Math.cos(angle) * 120,
                 this.player.y + Math.sin(angle) * 120
@@ -3634,6 +3411,7 @@ class Game {
         this.floor++;
         this.dungeonMap = new TileMap(64, 'dungeon', this.floor);
         this.map = this.dungeonMap;
+        this.playerMovement.setMap(this.map);
         this.monsters = [];
         this.projectiles = [];
         this.enemyProjectiles = [];
@@ -3741,44 +3519,11 @@ class Game {
     }
 
     spawnInitialMonsters() {
-        for (let i = 0; i < 5; i++) {
-            this.spawnMonster();
-        }
+        this.monsterFactory.spawnInitialMonsters();
     }
 
     spawnMonster() {
-        if (this.monsters.length >= MAX_MONSTERS) return;
-
-        let rx, ry;
-        let attempts = 0;
-        
-        do {
-            const row = Math.floor(2 + Math.random() * (this.map.rows - 4));
-            const col = Math.floor(2 + Math.random() * (this.map.cols - 4));
-            rx = col * this.map.tileSize + this.map.tileSize / 2;
-            ry = row * this.map.tileSize + this.map.tileSize / 2;
-            attempts++;
-        } while ((this.map.isSolid(rx, ry) || Math.hypot(rx - this.player.x, ry - this.player.y) < 200) && attempts < 50);
-
-        // Abort spawning if no valid coordinates were found
-        if (this.map.isSolid(rx, ry) || Math.hypot(rx - this.player.x, ry - this.player.y) < 200) {
-            return;
-        }
-
-        // Difficulty is tied to dungeon depth, not the player: each floor is a
-        // fixed-danger place and descending is the risk/reward decision
-        const mLvl = this.floor * 2 - 1 + Math.floor(Math.random() * 2);
-        const rank = Math.random() < 0.10 ? 'champion' : 'normal';
-        this.monsters.push(new Monster(rx, ry, mLvl, rank, this.pickMonsterKind()));
-    }
-
-    // Deeper floors unlock new monster kinds and weight them more heavily
-    pickMonsterKind() {
-        const roll = Math.random();
-        if (this.floor >= 2 && roll < 0.18) return 'slime';
-        if (this.floor >= 3 && roll < 0.38) return 'zombie';
-        if (this.floor >= 4 && roll < 0.55) return 'necromancer';
-        return 'skeleton';
+        this.monsterFactory.spawnMonster();
     }
 
     // Chests auto-open and traps auto-trigger on contact; altars wait for F.
@@ -3836,31 +3581,11 @@ class Game {
 
     // Which boss rules a given boss floor (cycles, getting nastier with depth)
     bossTypeForFloor(floor) {
-        const stage = Math.floor(floor / BOSS_FLOOR_INTERVAL); // 1, 2, 3, ...
-        if (stage <= 1) return 'butcher';
-        if (stage === 2) return 'lich';
-        return 'overlord';
+        return this.monsterFactory.bossTypeForFloor(floor);
     }
 
     spawnBoss() {
-        if (this.monsters.some(m => m.rank === 'boss' && m.state !== 'death')) return false;
-
-        const bossPos = this.dungeonMap.bossPoint || this.dungeonMap.spawnPoint;
-        const cx = bossPos.x;
-        const cy = bossPos.y;
-        const bossType = this.bossTypeForFloor(this.floor);
-        const boss = new Monster(cx, cy, this.floor * 2 + 1, 'boss', 'skeleton', bossType);
-        this.monsters.push(boss);
-
-        const cries = {
-            butcher: '신선한 고기다!',
-            lich: '죽음은 끝이 아니다...',
-            overlord: '필멸자여, 무릎 꿇어라!'
-        };
-        sfx.playBossSpawn();
-        this.floaters.add(this.player.x, this.player.y - 35, `⚠ ${boss.name}이(가) 깨어났습니다!`, '#ff2200');
-        this.floaters.add(boss.x, boss.y - 30, cries[bossType], '#ff2200');
-        return true;
+        return this.monsterFactory.spawnBoss();
     }
 
     handleMonsterKill(monster) {
@@ -4179,6 +3904,7 @@ class Game {
     changeMap(newMapType) {
         this.currentMap = newMapType;
         this.map = newMapType === 'town' ? this.townMap : this.dungeonMap;
+        this.playerMovement.setMap(this.map);
     }
 
     triggerTownPortal() {
@@ -4374,18 +4100,7 @@ class Game {
 
     // Applies incoming damage to the player and handles the death/reset flow
     damagePlayer(amount) {
-        if (this.player.hp <= 0) return;
-        this.player.hp = Math.max(0, this.player.hp - amount);
-        this.floaters.add(this.player.x, this.player.y - 12, `-${amount}`, '#ff3333');
-        sfx.playHit();
-        this.updateUI();
-
-        if (this.player.hp <= 0) {
-            this.floaters.add(this.player.x, this.player.y - 15, "사망!", "#ff0000");
-            this.isGameRunning = false;
-            sfx.playMonsterDeath();
-            this.showGameOver();
-        }
+        this.combat.damagePlayer(amount);
     }
 
     // Run-over summary (permadeath: nothing is saved, this is the only reward)
@@ -4776,9 +4491,3 @@ class Game {
     }
 }
 
-// Start game instance on load
-window.addEventListener('load', () => {
-    const game = new Game();
-    window.game = game;
-    game.run();
-});
