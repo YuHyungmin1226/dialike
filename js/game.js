@@ -720,6 +720,7 @@ class Player {
         };
 
         this.attackDuration = 20;
+        this.baseAttackDuration = 20;
         this.attackTimer = 0;
         this.attackRange = 45;
         this.spellCost = 15;
@@ -744,6 +745,7 @@ class Player {
         this.mp = c.baseMaxMp;
         this.critChance = c.critChance;
         this.critMultiplier = c.critMultiplier;
+        this.baseAttackDuration = c.attackDuration;
         this.attackDuration = c.attackDuration;
         this.skillAccess = c.skillAccess.slice();
         this.skills = Object.assign({}, c.startSkill);
@@ -837,7 +839,7 @@ class Player {
     }
 
     recalculateStats(inventory) {
-        this.attackDuration = 20; // reset to base; equipped weapon speed re-applies below
+        this.attackDuration = this.baseAttackDuration;
         let bonusAtk = 0;
         let bonusHp = 0;
         let bonusMp = 0;
@@ -863,7 +865,7 @@ class Player {
             if (item.type === 'weapon') {
                 bonusAtk += item.value;
                 if (item.speed) {
-                    this.attackDuration = Math.round(20 * item.speed);
+                    this.attackDuration = Math.round(this.baseAttackDuration * item.speed);
                 }
             } else if (item.type === 'armor') {
                 // primaryStat is set on looted gear; fall back to the stat
@@ -2447,6 +2449,7 @@ class Game {
         this.runStartTime = 0;
 
         this.castTimer = 0;
+        this.castDuration = 0;
         this.castAction = null;
         this.castName = '';
 
@@ -2958,6 +2961,7 @@ class Game {
     // Converts held WASD keys (screen directions) into isometric world
     // movement each frame; releasing all keys stops the player.
     processKeyboardMovement() {
+        if (this.castTimer > 0) return;
         this.playerMovement.processKeyboardMovement(this.keys);
     }
 
@@ -2973,6 +2977,7 @@ class Game {
         if (this.castTimer > 0 || !this.isGameRunning) return;
         if (this.player.potions.length <= 0 || this.player.hp >= this.player.maxHp) return;
         this.castTimer = 30;
+        this.castDuration = this.castTimer;
         this.castName = '체력 물약 마시는 중...';
         const playerRef = this.player;
         const floatersRef = this.floaters;
@@ -2991,6 +2996,7 @@ class Game {
         if (this.castTimer > 0 || !this.isGameRunning) return;
         if (this.player.manaPotions.length <= 0 || this.player.mp >= this.player.maxMp) return;
         this.castTimer = 30;
+        this.castDuration = this.castTimer;
         this.castName = '마나 물약 마시는 중...';
         const playerRef = this.player;
         const floatersRef = this.floaters;
@@ -3006,6 +3012,7 @@ class Game {
     }
 
     handleLeftClick(sx, sy) {
+        if (this.castTimer > 0) return;
         const v = this.screenToVirtual(sx, sy);
         if (this.currentMap === 'town') {
             const isoCam = this.camera.getIsoOffset();
@@ -3061,6 +3068,7 @@ class Game {
     }
 
     handleRightClick(sx, sy) {
+        if (this.castTimer > 0) return;
         const cartDest = this.screenToCartesian(sx, sy);
         this.combat.castSkill(this.player.activeSkill, cartDest.x, cartDest.y);
     }
@@ -3079,6 +3087,7 @@ class Game {
     }
 
     triggerMeleeKey() {
+        if (this.castTimer > 0) return;
         const target = this.combat.findNearestMonster(this.player.attackRange);
         if (target) {
             this.combat.attackMonster(target);
@@ -3088,6 +3097,7 @@ class Game {
     }
 
     triggerSkillKey() {
+        if (this.castTimer > 0) return;
         const key = this.player.activeSkill;
         const def = SKILLS[key];
         if (def && def.kind === 'melee_aoe') {
@@ -3916,6 +3926,7 @@ class Game {
         }
 
         this.castTimer = 90;
+        this.castDuration = this.castTimer;
         this.castName = '차원문 여는 중...';
         const self = this;
         this.castAction = function() {
@@ -4147,6 +4158,7 @@ class Game {
             if (this.castTimer <= 0 && this.castAction) {
                 this.castAction();
                 this.castAction = null;
+                this.castDuration = 0;
                 this.castName = '';
             }
         }
@@ -4418,7 +4430,8 @@ class Game {
         ctx.fillRect(barX, barY, barW, barH);
         ctx.shadowBlur = 0;
 
-        const progress = 1 - (this.castTimer / 90);
+        const duration = Math.max(1, this.castDuration || this.castTimer);
+        const progress = 1 - (this.castTimer / duration);
         const fillW = Math.max(2, Math.floor(barW * progress));
         const gradient = ctx.createLinearGradient(barX, barY, barX + barW, barY);
         gradient.addColorStop(0, '#8c7853');

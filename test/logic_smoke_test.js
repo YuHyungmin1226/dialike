@@ -5,18 +5,19 @@ class PlayerStub {
     this.atk = 20;
     this.baseAtk = 20;
     this.attackDuration = 20;
+    this.baseAttackDuration = 20;
     this.critChance = 0.05;
     this.critMultiplier = 1.75;
   }
 
   recalculateStats(inventory) {
-    this.attackDuration = 20; // reset
+    this.attackDuration = this.baseAttackDuration; // reset
     let bonusAtk = 0;
     inventory.forEach(item => {
       if (!item || !item.equipped) return;
       if (item.type === 'weapon') {
         bonusAtk += item.value;
-        if (item.speed) this.attackDuration = Math.round(20 * item.speed);
+        if (item.speed) this.attackDuration = Math.round(this.baseAttackDuration * item.speed);
       }
     });
     this.atk = this.baseAtk + bonusAtk;
@@ -71,6 +72,16 @@ function testUnequipResetsSpeed() {
   p.recalculateStats([dagger]);
   const ok = p.attackDuration === 20;
   console.log(`Unequip resets attackDuration: ${p.attackDuration} ${ok ? 'OK' : 'FAIL'}`);
+  if (!ok) process.exitCode = 1;
+}
+
+function testClassBaseAttackDurationSurvivesRecalc() {
+  const p = new PlayerStub();
+  p.baseAttackDuration = 18;
+  p.attackDuration = 18;
+  p.recalculateStats([]);
+  const ok = p.attackDuration === 18;
+  console.log(`classBaseAttackDuration: ${p.attackDuration} ${ok ? 'OK' : 'FAIL'}`);
   if (!ok) process.exitCode = 1;
 }
 
@@ -165,15 +176,46 @@ function testCastBlocksAction() {
   if (!blocked || !unblocked) process.exitCode = 1;
 }
 
+function testCastBlocksSkillTrigger() {
+  const game = {
+    castTimer: 90,
+    skillCasts: 0,
+    triggerSkillKey() {
+      if (this.castTimer > 0) return;
+      this.skillCasts++;
+    }
+  };
+  game.triggerSkillKey();
+  const blocked = game.skillCasts === 0;
+  game.castTimer = 0;
+  game.triggerSkillKey();
+  const unblocked = game.skillCasts === 1;
+  console.log(`castBlocksSkillTrigger: blocked=${blocked}, unblocked=${unblocked} -> ${blocked && unblocked ? 'OK' : 'FAIL'}`);
+  if (!blocked || !unblocked) process.exitCode = 1;
+}
+
+function testCastProgressUsesDuration() {
+  const progress = (castTimer, castDuration) => 1 - (castTimer / Math.max(1, castDuration || castTimer));
+  const potionStart = progress(30, 30);
+  const potionHalf = progress(15, 30);
+  const portalHalf = progress(45, 90);
+  const ok = potionStart === 0 && potionHalf === 0.5 && portalHalf === 0.5;
+  console.log(`castProgressDuration: potionStart=${potionStart}, potionHalf=${potionHalf}, portalHalf=${portalHalf} -> ${ok ? 'OK' : 'FAIL'}`);
+  if (!ok) process.exitCode = 1;
+}
+
 (function main(){
   console.log('Running logic smoke tests...');
   testCritDistribution(10000);
   testWeaponSpeed();
   testUnequipResetsSpeed();
+  testClassBaseAttackDurationSurvivesRecalc();
   testDamageTypeResist();
   testShopPriceFor();
   testSkillScaling();
   testCastingTimer();
   testCastBlocksAction();
+  testCastBlocksSkillTrigger();
+  testCastProgressUsesDuration();
   console.log('Done.');
 })();

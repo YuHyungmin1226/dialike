@@ -928,3 +928,33 @@ canvas {
 .text-gold {
     color: var(--gothic-gold) !important;
 }
+
+@media (max-width: 720px) {
+    .glass-panel {
+        max-width: calc(100vw - 24px);
+    }
+
+    #stats-panel,
+    #inventory-panel,
+    #skills-panel,
+    #shop-panel {
+        left: 12px !important;
+        right: auto !important;
+        width: calc(100vw - 24px) !important;
+        max-height: calc(100vh - 150px);
+        overflow-y: auto;
+    }
+
+    #stats-panel {
+        top: 24px !important;
+    }
+
+    #skills-panel {
+        top: 84px !important;
+    }
+
+    #inventory-panel,
+    #shop-panel {
+        top: 144px !important;
+    }
+}
