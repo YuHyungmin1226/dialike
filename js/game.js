@@ -830,12 +830,15 @@ class Player {
             this.skillPoints += 1;
             this.baseMaxHp += 15;
             this.baseMaxMp += 10;
-            this.hp = this.maxHp;
-            this.mp = this.maxMp;
             this.nextExp = Math.floor(this.nextExp * 1.35);
             leveledUp = true;
         }
         return leveledUp;
+    }
+
+    refillResources() {
+        this.hp = this.maxHp;
+        this.mp = this.maxMp;
     }
 
     recalculateStats(inventory) {
@@ -3614,6 +3617,9 @@ class Game {
         }
 
         this.player.recalculateStats(this.inventory);
+        if (isLeveledUp) {
+            this.player.refillResources();
+        }
         this.updateUI();
 
         if (monster.rank === 'boss') {

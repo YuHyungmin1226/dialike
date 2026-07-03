@@ -21,6 +21,10 @@
 
 `index.html` 파일을 웹 브라우저에서 열어 바로 실행할 수 있습니다. 별도의 서버나 빌드 과정이 필요하지 않습니다.
 
+Smoke test: `node test/logic_smoke_test.js`
+
+The smoke test suite includes regression coverage for level-up HP/MP refills after stat recalculation.
+
 ## 프로젝트 구조
 
 ```
