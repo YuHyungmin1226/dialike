@@ -4,23 +4,42 @@ class PlayerStub {
   constructor() {
     this.atk = 20;
     this.baseAtk = 20;
+    this.baseMaxHp = 100;
+    this.maxHp = 100;
+    this.hp = 100;
+    this.baseMaxMp = 50;
+    this.maxMp = 50;
+    this.mp = 50;
     this.attackDuration = 20;
     this.baseAttackDuration = 20;
     this.critChance = 0.05;
     this.critMultiplier = 1.75;
   }
 
+  refillResources() {
+    this.hp = this.maxHp;
+    this.mp = this.maxMp;
+  }
+
   recalculateStats(inventory) {
     this.attackDuration = this.baseAttackDuration; // reset
     let bonusAtk = 0;
+    let bonusHp = 0;
+    let bonusMp = 0;
     inventory.forEach(item => {
       if (!item || !item.equipped) return;
+      bonusHp += item.bonusHp || 0;
+      bonusMp += item.bonusMp || 0;
       if (item.type === 'weapon') {
         bonusAtk += item.value;
         if (item.speed) this.attackDuration = Math.round(this.baseAttackDuration * item.speed);
       }
     });
     this.atk = this.baseAtk + bonusAtk;
+    this.maxHp = this.baseMaxHp + bonusHp;
+    this.maxMp = this.baseMaxMp + bonusMp;
+    if (this.hp > this.maxHp) this.hp = this.maxHp;
+    if (this.mp > this.maxMp) this.mp = this.maxMp;
   }
 }
 
@@ -82,6 +101,25 @@ function testClassBaseAttackDurationSurvivesRecalc() {
   p.recalculateStats([]);
   const ok = p.attackDuration === 18;
   console.log(`classBaseAttackDuration: ${p.attackDuration} ${ok ? 'OK' : 'FAIL'}`);
+  if (!ok) process.exitCode = 1;
+}
+
+function testLevelUpRefillsToNewCapsAfterRecalc() {
+  const p = new PlayerStub();
+  const relic = { type: 'relic', bonusHp: 20, bonusMp: 5, equipped: true };
+
+  p.recalculateStats([relic]);
+  p.refillResources();
+
+  // Mirror the fixed live flow: stats grow, gear bonuses are recalculated,
+  // then HP/MP refill to the new caps.
+  p.baseMaxHp += 15;
+  p.baseMaxMp += 10;
+  p.recalculateStats([relic]);
+  p.refillResources();
+
+  const ok = p.hp === p.maxHp && p.mp === p.maxMp;
+  console.log(`levelUpRefillsNewCaps: hp=${p.hp}/${p.maxHp}, mp=${p.mp}/${p.maxMp} -> ${ok ? 'OK' : 'FAIL'}`);
   if (!ok) process.exitCode = 1;
 }
 
@@ -210,6 +248,7 @@ function testCastProgressUsesDuration() {
   testWeaponSpeed();
   testUnequipResetsSpeed();
   testClassBaseAttackDurationSurvivesRecalc();
+  testLevelUpRefillsToNewCapsAfterRecalc();
   testDamageTypeResist();
   testShopPriceFor();
   testSkillScaling();
