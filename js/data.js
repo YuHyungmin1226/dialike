@@ -7,8 +7,8 @@
 // ==========================================
 // 8. MAIN GAME CONSTANTS & DATA
 // ==========================================
-const SPAWN_INTERVAL = 180;
-const MAX_MONSTERS = 10;
+const SPAWN_INTERVAL = 168;
+const MAX_MONSTERS = 11;
 const ITEM_POOL = [
     { name: '철제 검', type: 'weapon', slot: 'weapon', stat: '+5 공격력', value: 5, speed: 1.0, rarity: 'normal', color: '#b0a89f', reqLevel: 1 },
     { name: '룬 단검', type: 'weapon', slot: 'weapon', stat: '+12 공격력', value: 12, speed: 0.8, rarity: 'normal', color: '#b0a89f', reqLevel: 1 },

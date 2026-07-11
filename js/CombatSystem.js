@@ -9,6 +9,11 @@ class CombatSystem {
     get projectiles() { return this.game.projectiles; }
     get effects() { return this.game.effects; }
 
+    canStartAction() {
+        const p = this.player;
+        return this.game.castTimer <= 0 && p.state !== 'attack' && p.attackTimer <= 0;
+    }
+
     attackMonster(monster) {
         const p = this.player;
         const dx = monster.x - p.x;
@@ -38,21 +43,22 @@ class CombatSystem {
 
     castSkill(key, tx, ty) {
         const p = this.player;
+        if (!this.canStartAction()) return false;
         if (this.game.currentMap === 'town') {
             this.floaters.add(p.x, p.y - 15, "마을은 안전지대입니다.", "#00ffff");
-            return;
+            return false;
         }
         const def = SKILLS[key];
         const lvl = p.effectiveSkillLevel(key);
         if (!def || lvl === 0) {
             this.floaters.add(p.x, p.y - 15, "미습득 스킬!", "#888888");
-            return;
+            return false;
         }
 
         const cost = skillCost(key, lvl);
         if (p.mp < cost) {
             this.floaters.add(p.x, p.y - 15, "마나 부족!", "#55aaff");
-            return;
+            return false;
         }
         p.mp -= cost;
 
@@ -76,6 +82,7 @@ class CombatSystem {
         p.state = 'attack';
         p.attackTimer = 12;
         this.game.updateUI();
+        return true;
     }
 
     castChainLightning(baseDmg, def, lvl) {
@@ -86,11 +93,12 @@ class CombatSystem {
         const segments = [{ x: from.x, y: from.y }];
         let dmg = baseDmg;
 
+        const candidates = [...this.monsters];
         for (let j = 0; j <= maxJumps; j++) {
             const range = j === 0 ? 600 : def.jumpRange;
             let target = null;
             let best = range;
-            for (const m of this.monsters) {
+            for (const m of candidates) {
                 if (m.state === 'death' || hitSet.has(m)) continue;
                 const d = Math.hypot(m.x - from.x, m.y - from.y);
                 if (d <= best) { best = d; target = m; }
@@ -117,7 +125,8 @@ class CombatSystem {
     castWhirlwind(dmg, def) {
         const p = this.player;
         sfx.playSlash();
-        for (const m of this.monsters) {
+        const targets = [...this.monsters];
+        for (const m of targets) {
             if (m.state === 'death') continue;
             if (Math.hypot(m.x - p.x, m.y - p.y) <= def.radius + m.radius) {
                 let d = dmg;
@@ -163,4 +172,8 @@ class CombatSystem {
         }
         return nearest;
     }
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { CombatSystem };
 }

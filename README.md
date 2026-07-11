@@ -23,7 +23,7 @@
 
 Smoke test: `node test/logic_smoke_test.js`
 
-The smoke test suite includes regression coverage for level-up HP/MP refills after stat recalculation.
+The smoke test suite includes regression coverage for level-up HP/MP refills after stat recalculation, multi-level XP awards, resistance-based immunity, same-slot equipment swaps, and gem socketing rules.
 
 ## 프로젝트 구조
 

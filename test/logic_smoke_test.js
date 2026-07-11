@@ -1,5 +1,9 @@
 // Smoke tests for the new Diablo-like mechanics (run with `node test/logic_smoke_test.js`)
 
+const assert = require('node:assert/strict');
+const { CombatSystem } = require('../js/CombatSystem.js');
+const { Game, Monster, findGridPath, goldDropForMonster } = require('../js/game.js');
+
 class PlayerStub {
   constructor() {
     this.atk = 20;
@@ -10,6 +14,11 @@ class PlayerStub {
     this.baseMaxMp = 50;
     this.maxMp = 50;
     this.mp = 50;
+    this.level = 1;
+    this.exp = 0;
+    this.nextExp = 100;
+    this.statPoints = 0;
+    this.skillPoints = 0;
     this.attackDuration = 20;
     this.baseAttackDuration = 20;
     this.critChance = 0.05;
@@ -21,6 +30,24 @@ class PlayerStub {
     this.mp = this.maxMp;
   }
 
+  gainExp(amount) {
+    this.exp += amount;
+    let levelsGained = 0;
+
+    while (this.exp >= this.nextExp) {
+      this.exp -= this.nextExp;
+      this.level++;
+      this.statPoints += 5;
+      this.skillPoints += 1;
+      this.baseMaxHp += 15;
+      this.baseMaxMp += 10;
+      this.nextExp = Math.floor(this.nextExp * 1.35);
+      levelsGained++;
+    }
+
+    return levelsGained;
+  }
+
   recalculateStats(inventory) {
     this.attackDuration = this.baseAttackDuration; // reset
     let bonusAtk = 0;
@@ -28,6 +55,13 @@ class PlayerStub {
     let bonusMp = 0;
     inventory.forEach(item => {
       if (!item || !item.equipped) return;
+      if (item.gems) {
+        item.gems.forEach(gem => {
+          bonusAtk += gem.effect.atk || 0;
+          bonusHp += gem.effect.hp || 0;
+          bonusMp += gem.effect.mp || 0;
+        });
+      }
       bonusHp += item.bonusHp || 0;
       bonusMp += item.bonusMp || 0;
       if (item.type === 'weapon') {
@@ -51,7 +85,7 @@ class MonsterStub {
 
   takeDamage(amount, floaters, type = 'physical') {
     const resist = this.resists[type] || 0;
-    const final = Math.max(1, Math.floor(amount * (1 - resist)));
+    const final = Math.max(0, Math.floor(amount * (1 - resist)));
     this.hp -= final;
     return final;
   }
@@ -70,7 +104,10 @@ function testCritDistribution(iterations = 10000) {
   for (let i = 0; i < iterations; i++) {
     if (Math.random() < p.critChance) crits++;
   }
-  console.log(`Crits: ${crits}/${iterations} -> ${(crits/iterations*100).toFixed(2)}% (expected ~${(p.critChance*100).toFixed(2)}%)`);
+  const observedRate = crits / iterations;
+  console.log(`Crits: ${crits}/${iterations} -> ${(observedRate*100).toFixed(2)}% (expected ~${(p.critChance*100).toFixed(2)}%)`);
+  assert.ok(observedRate >= 0.035 && observedRate <= 0.065,
+    `critical hit rate ${observedRate} is outside the expected tolerance`);
 }
 
 function testWeaponSpeed() {
@@ -111,15 +148,49 @@ function testLevelUpRefillsToNewCapsAfterRecalc() {
   p.recalculateStats([relic]);
   p.refillResources();
 
-  // Mirror the fixed live flow: stats grow, gear bonuses are recalculated,
-  // then HP/MP refill to the new caps.
-  p.baseMaxHp += 15;
-  p.baseMaxMp += 10;
-  p.recalculateStats([relic]);
-  p.refillResources();
+  global.sfx = { playLevelUp() {} };
+  const game = Object.create(Game.prototype);
+  Object.assign(game, {
+    player: p,
+    inventory: [relic],
+    updateUI() {},
+    triggerLevelUpBanner() {}
+  });
+  game.awardPlayerExp(100);
 
   const ok = p.hp === p.maxHp && p.mp === p.maxMp;
   console.log(`levelUpRefillsNewCaps: hp=${p.hp}/${p.maxHp}, mp=${p.mp}/${p.maxMp} -> ${ok ? 'OK' : 'FAIL'}`);
+  if (!ok) process.exitCode = 1;
+}
+
+function testMultiLevelGainReportsCountAndRefills() {
+  const p = new PlayerStub();
+  const relic = { type: 'relic', bonusHp: 20, bonusMp: 5, equipped: true };
+
+  p.recalculateStats([relic]);
+  p.hp = 40;
+  p.mp = 12;
+
+  global.sfx = { playLevelUp() {} };
+  const game = Object.create(Game.prototype);
+  Object.assign(game, {
+    player: p,
+    inventory: [relic],
+    updateUI() {},
+    triggerLevelUpBanner() {}
+  });
+  const levelsGained = game.awardPlayerExp(235);
+  const ok =
+    levelsGained === 2 &&
+    p.level === 3 &&
+    p.statPoints === 10 &&
+    p.skillPoints === 2 &&
+    p.hp === p.maxHp &&
+    p.mp === p.maxMp &&
+    p.maxHp === 150 &&
+    p.maxMp === 75;
+
+  console.log(`multiLevelGain: levels=${levelsGained}, hp=${p.hp}/${p.maxHp}, mp=${p.mp}/${p.maxMp}, statPoints=${p.statPoints}, skillPoints=${p.skillPoints} -> ${ok ? 'OK' : 'FAIL'}`);
   if (!ok) process.exitCode = 1;
 }
 
@@ -134,6 +205,124 @@ function testDamageTypeResist() {
   m.hp = 100;
   const dmgPhys = m.takeDamage(projPhys.damage, null, projPhys.type);
   console.log(`Physical hit: raw=50 final=${dmgPhys} hp=${m.hp}`);
+}
+
+function testDamageImmunityAllowsZero() {
+  const m = new MonsterStub();
+  m.resists.fire = 1;
+  const dmg = m.takeDamage(50, null, 'fire');
+  const ok = dmg === 0 && m.hp === 100;
+  console.log(`damageImmunity: final=${dmg} hp=${m.hp} -> ${ok ? 'OK' : 'FAIL'}`);
+  if (!ok) process.exitCode = 1;
+}
+
+function testEquipSwapOnlyKeepsLatestItemBonuses() {
+  const p = new PlayerStub();
+  const sword = { type: 'weapon', slot: 'weapon', value: 5, speed: 0.8, equipped: true };
+  const mace = { type: 'weapon', slot: 'weapon', value: 8, speed: 1.2, equipped: false };
+  const inventory = [sword, mace];
+
+  p.recalculateStats(inventory);
+  const game = Object.create(Game.prototype);
+  game.player = p;
+  game.inventory = inventory;
+  const swapped = game.toggleEquipment(1).ok;
+  const ok =
+    swapped === true &&
+    sword.equipped === false &&
+    mace.equipped === true &&
+    p.atk === 28 &&
+    p.attackDuration === 24;
+
+  console.log(`equipSwapLatestOnly: sword=${sword.equipped}, mace=${mace.equipped}, atk=${p.atk}, attackDuration=${p.attackDuration} -> ${ok ? 'OK' : 'FAIL'}`);
+  if (!ok) process.exitCode = 1;
+}
+
+function testSocketGemConsumesGemAndUpdatesStats() {
+  const p = new PlayerStub();
+  const axe = {
+    type: 'weapon',
+    slot: 'weapon',
+    value: 6,
+    speed: 1,
+    sockets: 1,
+    gems: [],
+    equipped: true
+  };
+  const ruby = {
+    type: 'gem',
+    name: 'Ruby',
+    effect: { atk: 4, hp: 10 }
+  };
+  const inventory = [ruby, axe];
+
+  p.recalculateStats(inventory);
+  const game = Object.create(Game.prototype);
+  game.player = p;
+  game.inventory = inventory;
+  game.selectedGemIdx = 0;
+  const socketed = game.socketGem(0, 1);
+  const ok =
+    socketed === true &&
+    inventory[0] === null &&
+    axe.gems.length === 1 &&
+    axe.gems[0] === ruby &&
+    p.atk === 30 &&
+    p.maxHp === 110;
+
+  console.log(`socketGemUpdatesStats: socketed=${socketed}, gemConsumed=${inventory[0] === null}, gems=${axe.gems.length}, atk=${p.atk}, maxHp=${p.maxHp} -> ${ok ? 'OK' : 'FAIL'}`);
+  if (!ok) process.exitCode = 1;
+}
+
+function testSocketGemRejectsFullSockets() {
+  const p = new PlayerStub();
+  const helm = {
+    type: 'helmet',
+    slot: 'helmet',
+    sockets: 1,
+    gems: [{ type: 'gem', name: 'Topaz', effect: { mp: 5 } }],
+    equipped: true
+  };
+  const ruby = { type: 'gem', name: 'Ruby', effect: { atk: 4, hp: 10 } };
+  const inventory = [ruby, helm];
+
+  p.recalculateStats(inventory);
+  const beforeAtk = p.atk;
+  const beforeHp = p.maxHp;
+  const game = Object.create(Game.prototype);
+  game.player = p;
+  game.inventory = inventory;
+  game.selectedGemIdx = 0;
+  const socketed = game.socketGem(0, 1);
+  const ok =
+    socketed === false &&
+    inventory[0] === ruby &&
+    helm.gems.length === 1 &&
+    p.atk === beforeAtk &&
+    p.maxHp === beforeHp;
+
+  console.log(`socketGemRejectsFull: socketed=${socketed}, gemStillInBag=${inventory[0] === ruby}, gems=${helm.gems.length}, atk=${p.atk}, maxHp=${p.maxHp} -> ${ok ? 'OK' : 'FAIL'}`);
+  if (!ok) process.exitCode = 1;
+}
+
+function testDragSwapKeepsSelectedGemOnSameItem() {
+  const ruby = { type: 'gem', name: 'Ruby', effect: { atk: 4 } };
+  const sword = { type: 'weapon', slot: 'weapon', value: 5, equipped: false };
+  const inventory = [ruby, null, sword];
+
+  const game = Object.create(Game.prototype);
+  game.inventory = inventory;
+  game.selectedGemIdx = 0;
+  const moved = game.swapInventorySlots(0, 1);
+  const ok =
+    moved === true &&
+    game.selectedGemIdx === 1 &&
+    inventory[0] === null &&
+    inventory[1] === ruby &&
+    inventory[2] === sword;
+
+  console.log(`dragSwapSelectedGem: selectedGemIdx=${game.selectedGemIdx}, gemMoved=${inventory[1] === ruby}, sourceEmpty=${inventory[0] === null} -> ${ok ? 'OK' : 'FAIL'}`);
+  if (!ok) process.exitCode = 1;
 }
 
 // ===== New tests for extracted data functions =====
@@ -242,6 +431,181 @@ function testCastProgressUsesDuration() {
   if (!ok) process.exitCode = 1;
 }
 
+function makeCombatFixture() {
+  const player = {
+    x: 0,
+    y: 0,
+    atk: 20,
+    mp: 30,
+    state: 'idle',
+    attackTimer: 0,
+    direction: 0,
+    critChance: 0,
+    critMultiplier: 1.75,
+    effectiveSkillLevel: () => 1
+  };
+  const game = {
+    player,
+    currentMap: 'dungeon',
+    castTimer: 0,
+    monsters: [],
+    projectiles: [],
+    effects: [],
+    floaters: { add() {} },
+    updateUI() {},
+    handleMonsterKill() {}
+  };
+  return { game, player, combat: new CombatSystem(game) };
+}
+
+function installCombatGlobals() {
+  global.SKILLS = {
+    whirlwind: { kind: 'melee_aoe', radius: 80, damageType: 'physical', color: '#fff' }
+  };
+  global.skillCost = () => 14;
+  global.skillMult = () => 1;
+  global.sfx = { playSlash() {}, playFireball() {}, playHit() {}, playMonsterDeath() {} };
+}
+
+function testProductionSkillActionLock() {
+  installCombatGlobals();
+  const { combat, player } = makeCombatFixture();
+
+  assert.equal(combat.castSkill('whirlwind', 10, 0), true);
+  assert.equal(combat.castSkill('whirlwind', 10, 0), false);
+  assert.equal(player.mp, 16);
+  console.log('productionSkillActionLock: OK');
+}
+
+function testProductionAoeUsesTargetSnapshot() {
+  installCombatGlobals();
+  const { combat, game } = makeCombatFixture();
+  let childHits = 0;
+  const children = [0, 1].map(() => ({
+    x: 5,
+    y: 0,
+    radius: 8,
+    state: 'walk',
+    takeDamage() { childHits++; return 0; }
+  }));
+  const parent = {
+    x: 5,
+    y: 0,
+    radius: 12,
+    state: 'walk',
+    takeDamage() { this.state = 'death'; return 1; }
+  };
+  game.monsters.push(parent);
+  game.handleMonsterKill = () => game.monsters.push(...children);
+
+  combat.castWhirlwind(100, global.SKILLS.whirlwind);
+  assert.equal(childHits, 0);
+  assert.equal(game.monsters.length, 3);
+  console.log('productionAoeTargetSnapshot: OK');
+}
+
+function testProductionGoldMultiplierAllowsZero() {
+  assert.equal(goldDropForMonster({ level: 10, goldMult: 0 }, 0.9), 0);
+  assert.equal(goldDropForMonster({ level: 2 }, 0), 10);
+  console.log('productionGoldMultiplierZero: OK');
+}
+
+function testProductionPathfindingAroundWall() {
+  global.Image = class ImageStub {};
+  global.window = {};
+  const rows = 7;
+  const cols = 7;
+  const tileSize = 10;
+  const grid = Array.from({ length: rows }, () => Array(cols).fill(0));
+  for (let row = 1; row <= 5; row++) grid[row][3] = 1;
+  const map = {
+    rows,
+    cols,
+    tileSize,
+    grid,
+    tileToWorld(col, row) {
+      return { x: (col + 0.5) * tileSize, y: (row + 0.5) * tileSize };
+    },
+    isSolid(x, y) {
+      const row = Math.floor(y / tileSize);
+      const col = Math.floor(x / tileSize);
+      return row < 0 || row >= rows || col < 0 || col >= cols || grid[row][col] === 1;
+    }
+  };
+  const start = map.tileToWorld(1, 3);
+  const goal = map.tileToWorld(5, 3);
+  const path = findGridPath(map, start.x, start.y, goal.x, goal.y);
+  assert.ok(path.length > 0);
+  assert.ok(path.some(point => Math.floor(point.y / tileSize) === 0 || Math.floor(point.y / tileSize) === 6));
+
+  const monster = new Monster(start.x, start.y, 1);
+  monster.speed = 1;
+  const player = { x: goal.x, y: goal.y };
+  for (let tick = 0; tick < 300; tick++) monster.update(player, map);
+  const remainingDistance = Math.hypot(monster.x - player.x, monster.y - player.y);
+  assert.ok(remainingDistance <= 15, `monster remained ${remainingDistance}px from the player`);
+  console.log('productionMonsterPathfinding: OK');
+}
+
+function testProductionTrapTilesAreUnique() {
+  const originalRandom = Math.random;
+  let seed = 123456789;
+  Math.random = () => {
+    seed = (1664525 * seed + 1013904223) >>> 0;
+    return seed / 0x100000000;
+  };
+  try {
+    const rows = 20;
+    const cols = 20;
+    const tileSize = 10;
+    const map = {
+      rows,
+      cols,
+      tileSize,
+      rooms: [],
+      grid: Array.from({ length: rows }, () => Array(cols).fill(0)),
+      spawnPoint: { x: 15, y: 15 },
+      stairsPoint: { x: 185, y: 185 },
+      bossPoint: null,
+      tileToWorld(col, row) {
+        return { x: (col + 0.5) * tileSize, y: (row + 0.5) * tileSize };
+      }
+    };
+    const game = Object.create(Game.prototype);
+    for (let run = 0; run < 100; run++) {
+      const traps = game.buildDungeonProps(map).filter(prop => prop.type === 'trap');
+      const keys = new Set(traps.map(trap => `${trap.x},${trap.y}`));
+      assert.equal(keys.size, traps.length);
+    }
+  } finally {
+    Math.random = originalRandom;
+  }
+  console.log('productionTrapTilesUnique: OK');
+}
+
+function testProductionManaHudOnlyWritesOnVisibleChange() {
+  const originalDocument = global.document;
+  const elements = {
+    'mana-liquid': { style: {} },
+    'mana-value': { textContent: '' }
+  };
+  global.document = { getElementById: id => elements[id] };
+  try {
+    const game = Object.create(Game.prototype);
+    game.player = { mp: 2, maxMp: 30 };
+    game.manaUiSignature = '';
+    assert.equal(game.updateManaUI(), true);
+    game.player.mp = 2.2;
+    assert.equal(game.updateManaUI(), true);
+    game.player.mp = 2.8;
+    assert.equal(game.updateManaUI(), false);
+    assert.equal(elements['mana-value'].textContent, '3/30');
+  } finally {
+    global.document = originalDocument;
+  }
+  console.log('productionManaHudRefresh: OK');
+}
+
 (function main(){
   console.log('Running logic smoke tests...');
   testCritDistribution(10000);
@@ -249,12 +613,24 @@ function testCastProgressUsesDuration() {
   testUnequipResetsSpeed();
   testClassBaseAttackDurationSurvivesRecalc();
   testLevelUpRefillsToNewCapsAfterRecalc();
+  testMultiLevelGainReportsCountAndRefills();
   testDamageTypeResist();
+  testDamageImmunityAllowsZero();
+  testEquipSwapOnlyKeepsLatestItemBonuses();
+  testSocketGemConsumesGemAndUpdatesStats();
+  testSocketGemRejectsFullSockets();
+  testDragSwapKeepsSelectedGemOnSameItem();
   testShopPriceFor();
   testSkillScaling();
   testCastingTimer();
   testCastBlocksAction();
   testCastBlocksSkillTrigger();
   testCastProgressUsesDuration();
+  testProductionSkillActionLock();
+  testProductionAoeUsesTargetSnapshot();
+  testProductionGoldMultiplierAllowsZero();
+  testProductionPathfindingAroundWall();
+  testProductionTrapTilesAreUnique();
+  testProductionManaHudOnlyWritesOnVisibleChange();
   console.log('Done.');
 })();

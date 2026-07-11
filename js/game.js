@@ -10,6 +10,85 @@
 // WorldViewSystem (Global reference to the utility class)
 // The geometry logic has been moved entirely to this system for clean separation of concerns.
 
+function gridCellKey(row, col) {
+    return `${row},${col}`;
+}
+
+function claimGridCell(occupied, row, col) {
+    const key = gridCellKey(row, col);
+    if (occupied.has(key)) return false;
+    occupied.add(key);
+    return true;
+}
+
+function goldDropForMonster(monster, roll = Math.random()) {
+    return Math.floor(monster.level * (5 + roll * 5) * (monster.goldMult ?? 1));
+}
+
+function findGridPath(map, fromX, fromY, toX, toY, maxVisited = 640) {
+    const tileSize = map.tileSize;
+    const start = {
+        row: Math.floor(fromY / tileSize),
+        col: Math.floor(fromX / tileSize)
+    };
+    const goal = {
+        row: Math.floor(toY / tileSize),
+        col: Math.floor(toX / tileSize)
+    };
+    const isOpen = (row, col) => (
+        row >= 0 && row < map.rows && col >= 0 && col < map.cols &&
+        map.grid[row] && map.grid[row][col] === 0
+    );
+    if (!isOpen(start.row, start.col) || !isOpen(goal.row, goal.col)) return [];
+
+    const startKey = gridCellKey(start.row, start.col);
+    const goalKey = gridCellKey(goal.row, goal.col);
+    if (startKey === goalKey) return [];
+
+    const open = [{ ...start, g: 0, f: 0 }];
+    const bestCost = new Map([[startKey, 0]]);
+    const cameFrom = new Map();
+    const directions = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    let visited = 0;
+
+    while (open.length > 0 && visited < maxVisited) {
+        let bestIndex = 0;
+        for (let i = 1; i < open.length; i++) {
+            if (open[i].f < open[bestIndex].f) bestIndex = i;
+        }
+        const current = open.splice(bestIndex, 1)[0];
+        const currentKey = gridCellKey(current.row, current.col);
+        visited++;
+
+        if (currentKey === goalKey) {
+            const cells = [];
+            let key = goalKey;
+            while (key !== startKey) {
+                const [row, col] = key.split(',').map(Number);
+                cells.push({ row, col });
+                key = cameFrom.get(key);
+                if (!key) return [];
+            }
+            cells.reverse();
+            return cells.map(cell => map.tileToWorld(cell.col, cell.row));
+        }
+
+        for (const [dRow, dCol] of directions) {
+            const row = current.row + dRow;
+            const col = current.col + dCol;
+            if (!isOpen(row, col)) continue;
+            const key = gridCellKey(row, col);
+            const nextCost = current.g + 1;
+            if (nextCost >= (bestCost.get(key) ?? Infinity)) continue;
+            bestCost.set(key, nextCost);
+            cameFrom.set(key, currentKey);
+            const heuristic = Math.abs(goal.row - row) + Math.abs(goal.col - col);
+            open.push({ row, col, g: nextCost, f: nextCost + heuristic });
+        }
+    }
+    return [];
+}
+
 class Camera {
     constructor(x = 0, y = 0) {
         this.x = x;
@@ -48,6 +127,7 @@ class TileMap {
         this.tileImage = null;
         this.isImageLoaded = false;
         this.tileVariants = this.buildTileVariants(null);
+        this.wallVariants = this.buildWallVariants();
         if (type === 'dungeon') {
             this.tileImage = new Image();
             this.tileImage.src = 'assets/tile_stone.png';
@@ -61,10 +141,13 @@ class TileMap {
         this.variantGrid = [];
         this.rooms = [];          // dungeon rooms as {r, c, w, h}
         this.houseSpots = [];     // town building footprints
+        this.pathMask = new Set();
+        this.plazaMask = new Set();
         this.spawnPoint = null;   // world coords
         this.stairsPoint = null;
         this.bossPoint = null;
         this.generateMap();
+        this.buildStaticCellCache();
 
         // Fog-of-war state for the minimap (town starts fully revealed)
         this.explored = [];
@@ -73,8 +156,44 @@ class TileMap {
         }
     }
 
+    buildStaticCellCache() {
+        this.floorCells = [];
+        this.wallCells = [];
+        const halfTile = this.tileSize / 2;
+
+        for (let r = 0; r < this.rows; r++) {
+            for (let c = 0; c < this.cols; c++) {
+                const cartX = c * this.tileSize + halfTile;
+                const cartY = r * this.tileSize + halfTile;
+                const cell = {
+                    r,
+                    c,
+                    cartX,
+                    cartY,
+                    isoX: cartX - cartY,
+                    isoY: (cartX + cartY) * 0.5,
+                    depth: cartX + cartY
+                };
+
+                if (this.grid[r][c] === 1) {
+                    cell.kind = 'wall';
+                    cell.hash = TileMap.cellHash(r, c);
+                    cell.wallVariantIdx = this.wallVariants.length > 0 ? (cell.hash % this.wallVariants.length) : 0;
+                    this.wallCells.push(cell);
+                } else {
+                    cell.variantIdx = this.variantGrid[r][c];
+                    this.floorCells.push(cell);
+                }
+            }
+        }
+    }
+
     tileToWorld(c, r) {
         return WorldViewSystem.tileToWorld(c, r, this.tileSize);
+    }
+
+    static cellKey(r, c) {
+        return `${r},${c}`;
     }
 
     // Deterministic per-cell hash so tile decoration stays stable every frame
@@ -84,6 +203,28 @@ class TileMap {
         return Math.abs(h ^ (h >> 16));
     }
 
+    markTownPath(c0, r0, c1, r1, mask = this.pathMask) {
+        let c = c0;
+        let r = r0;
+        mask.add(TileMap.cellKey(r, c));
+        while (c !== c1) {
+            c += Math.sign(c1 - c);
+            mask.add(TileMap.cellKey(r, c));
+        }
+        while (r !== r1) {
+            r += Math.sign(r1 - r);
+            mask.add(TileMap.cellKey(r, c));
+        }
+    }
+
+    isTownPath(r, c) {
+        return this.pathMask.has(TileMap.cellKey(r, c));
+    }
+
+    isTownPlaza(r, c) {
+        return this.plazaMask.has(TileMap.cellKey(r, c));
+    }
+
     buildTileVariants(baseImage) {
         const w = this.tileSize * 2;
         const h = this.tileSize;
@@ -91,7 +232,7 @@ class TileMap {
         const baseTones = this.palette.base;
         const variants = [];
 
-        for (let v = 0; v < 8; v++) {
+        for (let v = 0; v < 12; v++) {
             const canvas = document.createElement('canvas');
             canvas.width = w;
             canvas.height = h;
@@ -124,6 +265,15 @@ class TileMap {
                     tctx.ellipse(rnd() * w, rnd() * h, 8 + rnd() * 16, 4 + rnd() * 8, 0, 0, Math.PI * 2);
                     tctx.fill();
                 }
+            }
+
+            if (isTown && v >= 8) {
+                const pathBase = v === 10 ? '#786645' : (v === 11 ? '#506845' : '#67563b');
+                const pathShade = v === 10 ? 'rgba(210, 188, 130, 0.16)' : 'rgba(20, 14, 10, 0.22)';
+                tctx.fillStyle = pathBase;
+                tctx.fillRect(0, 0, w, h);
+                tctx.fillStyle = pathShade;
+                tctx.fillRect(0, 0, w, h);
             }
 
             // Speckle noise
@@ -224,6 +374,108 @@ class TileMap {
                         tctx.fill();
                     }
                 }
+            } else if (v === 8) {
+                if (isTown) {
+                    tctx.strokeStyle = 'rgba(92, 76, 51, 0.75)';
+                    tctx.lineWidth = 2;
+                    tctx.beginPath();
+                    tctx.moveTo(w * 0.18, h * 0.25);
+                    tctx.lineTo(w * 0.82, h * 0.72);
+                    tctx.moveTo(w * 0.28, h * 0.18);
+                    tctx.lineTo(w * 0.9, h * 0.64);
+                    tctx.stroke();
+                    tctx.fillStyle = 'rgba(210, 200, 175, 0.28)';
+                    for (let i = 0; i < 10; i++) {
+                        tctx.beginPath();
+                        tctx.arc(w * 0.15 + rnd() * w * 0.7, h * 0.18 + rnd() * h * 0.58, 1.2 + rnd() * 1.4, 0, Math.PI * 2);
+                        tctx.fill();
+                    }
+                } else {
+                    const puddle = tctx.createRadialGradient(w * 0.48, h * 0.52, 2, w * 0.48, h * 0.52, 24);
+                    puddle.addColorStop(0, 'rgba(110, 130, 150, 0.28)');
+                    puddle.addColorStop(0.55, 'rgba(42, 56, 70, 0.3)');
+                    puddle.addColorStop(1, 'rgba(12, 18, 24, 0)');
+                    tctx.fillStyle = puddle;
+                    tctx.beginPath();
+                    tctx.ellipse(w * 0.48, h * 0.52, 26, 12, -0.2, 0, Math.PI * 2);
+                    tctx.fill();
+                    tctx.strokeStyle = 'rgba(180, 200, 220, 0.1)';
+                    tctx.lineWidth = 1;
+                    tctx.beginPath();
+                    tctx.moveTo(w * 0.33, h * 0.49);
+                    tctx.lineTo(w * 0.57, h * 0.38);
+                    tctx.stroke();
+                }
+            } else if (v === 9) {
+                if (isTown) {
+                    tctx.strokeStyle = 'rgba(84, 67, 42, 0.8)';
+                    tctx.lineWidth = 1.5;
+                    for (let i = 0; i < 3; i++) {
+                        const yOff = h * (0.28 + i * 0.14);
+                        tctx.beginPath();
+                        tctx.moveTo(w * 0.18, yOff);
+                        tctx.lineTo(w * 0.82, yOff + (rnd() - 0.5) * 5);
+                        tctx.stroke();
+                    }
+                } else {
+                    tctx.fillStyle = 'rgba(36, 20, 14, 0.24)';
+                    tctx.beginPath();
+                    tctx.ellipse(w * 0.42, h * 0.52, 18, 9, 0.1, 0, Math.PI * 2);
+                    tctx.fill();
+                    tctx.fillStyle = 'rgba(120, 105, 92, 0.55)';
+                    for (let i = 0; i < 8; i++) {
+                        tctx.fillRect(w * 0.24 + rnd() * w * 0.5, h * 0.28 + rnd() * h * 0.36, 2 + rnd() * 3, 1.5 + rnd() * 2);
+                    }
+                }
+            } else if (v === 10) {
+                if (isTown) {
+                    tctx.strokeStyle = 'rgba(205, 193, 162, 0.55)';
+                    tctx.lineWidth = 1;
+                    tctx.beginPath();
+                    tctx.moveTo(w * 0.2, h * 0.5);
+                    tctx.lineTo(w * 0.8, h * 0.5);
+                    tctx.moveTo(w * 0.5, h * 0.18);
+                    tctx.lineTo(w * 0.5, h * 0.82);
+                    tctx.stroke();
+                } else {
+                    tctx.strokeStyle = 'rgba(145, 120, 70, 0.55)';
+                    tctx.lineWidth = 1.2;
+                    tctx.beginPath();
+                    tctx.moveTo(w * 0.5, h * 0.22);
+                    tctx.lineTo(w * 0.62, h * 0.42);
+                    tctx.lineTo(w * 0.5, h * 0.68);
+                    tctx.lineTo(w * 0.38, h * 0.42);
+                    tctx.closePath();
+                    tctx.stroke();
+                    tctx.beginPath();
+                    tctx.moveTo(w * 0.42, h * 0.34);
+                    tctx.lineTo(w * 0.58, h * 0.52);
+                    tctx.moveTo(w * 0.58, h * 0.34);
+                    tctx.lineTo(w * 0.42, h * 0.52);
+                    tctx.stroke();
+                }
+            } else if (v === 11) {
+                if (isTown) {
+                    tctx.fillStyle = 'rgba(72, 116, 58, 0.24)';
+                    for (let i = 0; i < 5; i++) {
+                        tctx.beginPath();
+                        tctx.ellipse(w * 0.24 + rnd() * w * 0.52, h * 0.28 + rnd() * h * 0.38, 7 + rnd() * 8, 3 + rnd() * 4, rnd() * 0.6, 0, Math.PI * 2);
+                        tctx.fill();
+                    }
+                } else {
+                    tctx.fillStyle = 'rgba(68, 52, 34, 0.48)';
+                    for (let i = 0; i < 3; i++) {
+                        const rx = w * 0.3 + rnd() * w * 0.36;
+                        const ry = h * 0.34 + rnd() * h * 0.3;
+                        tctx.beginPath();
+                        tctx.moveTo(rx - 5, ry + 2);
+                        tctx.lineTo(rx, ry - 3);
+                        tctx.lineTo(rx + 6, ry + 1);
+                        tctx.lineTo(rx + 2, ry + 4);
+                        tctx.closePath();
+                        tctx.fill();
+                    }
+                }
             }
 
             // Depth-tier color wash unifies image, speckles and decorations
@@ -248,6 +500,110 @@ class TileMap {
         return variants;
     }
 
+    buildWallVariants() {
+        const variants = [];
+        for (let v = 0; v < 8; v++) {
+            const canvas = document.createElement('canvas');
+            canvas.width = this.tileSize * 2;
+            canvas.height = this.tileSize + 40;
+            const ctx = canvas.getContext('2d');
+            this.paintWallVariant(ctx, v * 97 + 13);
+            variants.push(canvas);
+        }
+        return variants;
+    }
+
+    paintWallVariant(ctx, hash) {
+        const heightOffset = 40;
+        const w = this.tileSize;
+        const pal = this.palette;
+        const centerX = w;
+        const topY = 0;
+        const midY = w / 2;
+        const capBottomY = w;
+        const frontBottomY = w + heightOffset;
+
+        const topGrad = ctx.createLinearGradient(centerX, topY, centerX, capBottomY);
+        topGrad.addColorStop(0, pal.wallHighlight);
+        topGrad.addColorStop(0.45, pal.wallTop[hash % 3]);
+        topGrad.addColorStop(1, pal.wallCapShadow);
+        ctx.fillStyle = topGrad;
+        ctx.beginPath();
+        ctx.moveTo(centerX, topY);
+        ctx.lineTo(centerX + w, midY);
+        ctx.lineTo(centerX, capBottomY);
+        ctx.lineTo(centerX - w, midY);
+        ctx.closePath();
+        ctx.fill();
+
+        const leftGrad = ctx.createLinearGradient(0, midY, centerX, frontBottomY);
+        leftGrad.addColorStop(0, pal.wallAmbient);
+        leftGrad.addColorStop(1, pal.wallLeft);
+        ctx.fillStyle = leftGrad;
+        ctx.beginPath();
+        ctx.moveTo(0, midY);
+        ctx.lineTo(centerX, capBottomY);
+        ctx.lineTo(centerX, frontBottomY);
+        ctx.lineTo(0, frontBottomY - midY);
+        ctx.closePath();
+        ctx.fill();
+
+        const rightGrad = ctx.createLinearGradient(w * 2, midY, centerX, frontBottomY);
+        rightGrad.addColorStop(0, pal.wallHighlight);
+        rightGrad.addColorStop(1, pal.wallRight);
+        ctx.fillStyle = rightGrad;
+        ctx.beginPath();
+        ctx.moveTo(centerX, capBottomY);
+        ctx.lineTo(w * 2, midY);
+        ctx.lineTo(w * 2, frontBottomY - midY);
+        ctx.lineTo(centerX, frontBottomY);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = pal.grime;
+        ctx.beginPath();
+        ctx.ellipse(centerX - w * 0.25 + (hash % 9) - 4, heightOffset * 0.75, 10, 5, 0.4, 0, Math.PI * 2);
+        ctx.ellipse(centerX + w * 0.18 - (hash % 5), frontBottomY - (heightOffset - 6), 8, 4, -0.3, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(centerX - w * 0.82, midY + 4);
+        ctx.lineTo(centerX - w * 0.15, midY + 16);
+        ctx.moveTo(centerX + w * 0.1, midY + 6);
+        ctx.lineTo(centerX + w * 0.72, midY + 18);
+        ctx.stroke();
+
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.28)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let k = 1; k <= 2; k++) {
+            const dy = (heightOffset / 3) * k + (hash % 5) - 2;
+            ctx.moveTo(0, midY + dy);
+            ctx.lineTo(centerX, capBottomY + dy);
+            ctx.moveTo(centerX, capBottomY + dy);
+            ctx.lineTo(w * 2, midY + dy);
+        }
+        const seamL = 0.25 + (hash % 7) * 0.07;
+        ctx.moveTo(w * seamL, midY * (1 + seamL));
+        ctx.lineTo(w * seamL, midY * (1 + seamL) + heightOffset);
+        const seamR = 0.25 + (hash % 5) * 0.09;
+        ctx.moveTo(centerX + w * seamR, capBottomY - midY * seamR);
+        ctx.lineTo(centerX + w * seamR, capBottomY - midY * seamR + heightOffset);
+        ctx.stroke();
+
+        ctx.strokeStyle = pal.wallStroke;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(centerX, capBottomY);
+        ctx.lineTo(w * 2, midY);
+        ctx.lineTo(w * 2, frontBottomY - midY);
+        ctx.lineTo(centerX, frontBottomY);
+        ctx.closePath();
+        ctx.stroke();
+    }
+
     generateMap() {
         if (this.type === 'town') {
             this.generateTown();
@@ -262,14 +618,40 @@ class TileMap {
         for (let r = 0; r < this.rows; r++) {
             const variantRow = [];
             for (let c = 0; c < this.cols; c++) {
-                // Mostly plain tone variants, occasionally a decorated tile
                 const hash = TileMap.cellHash(r, c);
                 let variant = hash % 4;
-                const decoRoll = hash % 23;
+
+                if (this.type === 'town') {
+                    if (this.isTownPlaza(r, c)) {
+                        variant = 10 + (hash % 2);
+                    } else if (this.isTownPath(r, c)) {
+                        variant = 8 + (hash % 2);
+                    } else {
+                        const decoRoll = hash % 29;
+                        if (decoRoll === 7) variant = 4;
+                        else if (decoRoll === 11) variant = 5;
+                        else if (decoRoll === 15) variant = 6;
+                        else if (decoRoll === 19) variant = 7;
+                        else if (decoRoll === 23) variant = 11;
+                    }
+                    variantRow.push(variant);
+                    continue;
+                }
+
+                const openNeighbors =
+                    (r > 0 && this.grid[r - 1][c] === 0 ? 1 : 0) +
+                    (r < this.rows - 1 && this.grid[r + 1][c] === 0 ? 1 : 0) +
+                    (c > 0 && this.grid[r][c - 1] === 0 ? 1 : 0) +
+                    (c < this.cols - 1 && this.grid[r][c + 1] === 0 ? 1 : 0);
+                const decoRoll = hash % 41;
                 if (decoRoll === 7) variant = 4;
                 else if (decoRoll === 11) variant = 5;
                 else if (decoRoll === 15) variant = 6;
                 else if (decoRoll === 19) variant = 7;
+                else if (decoRoll === 23) variant = 8;
+                else if (decoRoll === 27) variant = 9;
+                else if (decoRoll === 31 && openNeighbors >= 3) variant = 10;
+                else if (decoRoll === 35) variant = 11;
                 variantRow.push(variant);
             }
             this.variantGrid.push(variantRow);
@@ -278,6 +660,8 @@ class TileMap {
 
     generateTown() {
         this.grid = [];
+        this.pathMask.clear();
+        this.plazaMask.clear();
         for (let r = 0; r < this.rows; r++) {
             const rowData = [];
             for (let c = 0; c < this.cols; c++) {
@@ -299,6 +683,20 @@ class TileMap {
                 }
             }
         });
+
+        for (let r = 6; r <= 9; r++) {
+            for (let c = 6; c <= 9; c++) {
+                const key = TileMap.cellKey(r, c);
+                this.pathMask.add(key);
+                this.plazaMask.add(key);
+            }
+        }
+        this.markTownPath(8, 14, 8, 9);
+        this.markTownPath(8, 8, 4, 5);
+        this.markTownPath(8, 8, 12, 5);
+        this.markTownPath(8, 8, 11, 9);
+        this.markTownPath(8, 8, 5, 8);
+        this.markTownPath(8, 8, 10, 4);
     }
 
     // Classic rooms-and-corridors dungeon: place non-overlapping rooms,
@@ -498,65 +896,73 @@ class TileMap {
         const halfWidth = viewWidth / 2;
         const halfHeight = viewHeight / 2;
 
-        for (let r = 0; r < this.rows; r++) {
-            for (let c = 0; c < this.cols; c++) {
-                const tileType = this.grid.at(r).at(c);
-                const cartX = c * this.tileSize + this.tileSize / 2;
-                const cartY = r * this.tileSize + this.tileSize / 2;
+        for (const cell of this.floorCells) {
+            const screenX = cell.isoX - isoCam.x + halfWidth;
+            const screenY = cell.isoY - isoCam.y + halfHeight;
 
-                const isoPos = WorldViewSystem.worldToIso(cartX, cartY);
-                const screenX = isoPos.x - isoCam.x + halfWidth;
-                const screenY = isoPos.y - isoCam.y + halfHeight;
+            const buffer = 150;
+            if (screenX < -buffer || screenX > viewWidth + buffer ||
+                screenY < -buffer || screenY > viewHeight + buffer) {
+                continue;
+            }
 
-                const buffer = 150;
-                if (screenX < -buffer || screenX > viewWidth + buffer || 
-                    screenY < -buffer || screenY > viewHeight + buffer) {
-                    continue;
-                }
-
-                if (tileType === 0) {
-                    const variantIdx = this.variantGrid.at(r).at(c);
-                    const tileCanvas = this.tileVariants ? this.tileVariants.at(variantIdx) : null;
-                    if (tileCanvas) {
-                        const imgWidth = this.tileSize * 2;
-                        const imgHeight = this.tileSize;
-                        ctx.drawImage(
-                            tileCanvas,
-                            screenX - imgWidth / 2,
-                            screenY - imgHeight / 2,
-                            imgWidth,
-                            imgHeight
-                        );
-                    } else {
-                        ctx.fillStyle = this.palette.fallbackFloor;
-                        ctx.strokeStyle = this.palette.fallbackStroke;
-                        ctx.lineWidth = 1;
-                        ctx.beginPath();
-                        ctx.moveTo(screenX, screenY - this.tileSize / 2);
-                        ctx.lineTo(screenX + this.tileSize, screenY);
-                        ctx.lineTo(screenX, screenY + this.tileSize / 2);
-                        ctx.lineTo(screenX - this.tileSize, screenY);
-                        ctx.closePath();
-                        ctx.fill();
-                        ctx.stroke();
-                    }
-                }
-                // Walls (tileType 1) are depth-sorted with entities and drawn
-                // via renderWallTile so they can occlude or fade around actors
+            const tileCanvas = this.tileVariants ? this.tileVariants[cell.variantIdx] : null;
+            if (tileCanvas) {
+                const imgWidth = this.tileSize * 2;
+                const imgHeight = this.tileSize;
+                ctx.drawImage(
+                    tileCanvas,
+                    screenX - imgWidth / 2,
+                    screenY - imgHeight / 2,
+                    imgWidth,
+                    imgHeight
+                );
+            } else {
+                ctx.fillStyle = this.palette.fallbackFloor;
+                ctx.strokeStyle = this.palette.fallbackStroke;
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(screenX, screenY - this.tileSize / 2);
+                ctx.lineTo(screenX + this.tileSize, screenY);
+                ctx.lineTo(screenX, screenY + this.tileSize / 2);
+                ctx.lineTo(screenX - this.tileSize, screenY);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
             }
         }
     }
 
-    renderWallTile(ctx, screenX, screenY, r, c, alpha = 1) {
+    renderWallTile(ctx, screenX, screenY, r, c, alpha = 1, hashValue = null) {
         const heightOffset = 40;
         const w = this.tileSize;
-        const hash = TileMap.cellHash(r, c);
+        const hash = hashValue ?? TileMap.cellHash(r, c);
         const pal = this.palette;
 
         ctx.save();
         if (alpha < 1) ctx.globalAlpha = alpha;
+        const wallSprite = this.wallVariants?.[
+            this.wallVariants.length > 0
+                ? ((hashValue ?? hash) % this.wallVariants.length)
+                : 0
+        ];
+        if (wallSprite) {
+            ctx.drawImage(
+                wallSprite,
+                screenX - w,
+                screenY - heightOffset - w / 2,
+                w * 2,
+                w + heightOffset
+            );
+            ctx.restore();
+            return;
+        }
 
-        ctx.fillStyle = pal.wallTop.at(hash % 3);
+        const topGrad = ctx.createLinearGradient(screenX, screenY - w / 2 - heightOffset, screenX, screenY + w / 2 - heightOffset);
+        topGrad.addColorStop(0, pal.wallHighlight);
+        topGrad.addColorStop(0.45, pal.wallTop.at(hash % 3));
+        topGrad.addColorStop(1, pal.wallCapShadow);
+        ctx.fillStyle = topGrad;
         ctx.beginPath();
         ctx.moveTo(screenX, screenY - w / 2 - heightOffset);
         ctx.lineTo(screenX + w, screenY - heightOffset);
@@ -565,7 +971,10 @@ class TileMap {
         ctx.closePath();
         ctx.fill();
 
-        ctx.fillStyle = pal.wallLeft;
+        const leftGrad = ctx.createLinearGradient(screenX - w, screenY - heightOffset, screenX, screenY + w / 2);
+        leftGrad.addColorStop(0, pal.wallAmbient);
+        leftGrad.addColorStop(1, pal.wallLeft);
+        ctx.fillStyle = leftGrad;
         ctx.beginPath();
         ctx.moveTo(screenX - w, screenY - heightOffset);
         ctx.lineTo(screenX, screenY + w / 2 - heightOffset);
@@ -574,7 +983,10 @@ class TileMap {
         ctx.closePath();
         ctx.fill();
 
-        ctx.fillStyle = pal.wallRight;
+        const rightGrad = ctx.createLinearGradient(screenX + w, screenY - heightOffset, screenX, screenY + w / 2);
+        rightGrad.addColorStop(0, pal.wallHighlight);
+        rightGrad.addColorStop(1, pal.wallRight);
+        ctx.fillStyle = rightGrad;
         ctx.beginPath();
         ctx.moveTo(screenX, screenY + w / 2 - heightOffset);
         ctx.lineTo(screenX + w, screenY - heightOffset);
@@ -582,6 +994,21 @@ class TileMap {
         ctx.lineTo(screenX, screenY + w / 2);
         ctx.closePath();
         ctx.fill();
+
+        ctx.fillStyle = pal.grime;
+        ctx.beginPath();
+        ctx.ellipse(screenX - w * 0.25 + (hash % 9) - 4, screenY - heightOffset * 0.25, 10, 5, 0.4, 0, Math.PI * 2);
+        ctx.ellipse(screenX + w * 0.18 - (hash % 5), screenY + 6, 8, 4, -0.3, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(screenX - w * 0.82, screenY - heightOffset + 4);
+        ctx.lineTo(screenX - w * 0.15, screenY - heightOffset + 16);
+        ctx.moveTo(screenX + w * 0.1, screenY - heightOffset + 6);
+        ctx.lineTo(screenX + w * 0.72, screenY - heightOffset + 18);
+        ctx.stroke();
 
         // Mortar lines
         ctx.strokeStyle = 'rgba(0, 0, 0, 0.28)';
@@ -619,14 +1046,18 @@ class TileMap {
 // Floor-depth palettes: tiers 0-2 cover floors 1-3, 4-6, 7+
 TileMap.PALETTES = {
     town: {
-        base: ['#1d3a1d', '#1a331a', '#214221', '#183018'],
-        tint: null,
-        wallTop: ['#223b22', '#1f3a26', '#264226'],
-        wallLeft: '#172b17',
-        wallRight: '#0f1f0f',
-        wallStroke: '#325232',
-        fallbackFloor: '#152515',
-        fallbackStroke: '#223822'
+        base: ['#36522d', '#314b29', '#3f5c34', '#2b4424'],
+        tint: 'rgba(214, 186, 116, 0.05)',
+        wallTop: ['#466341', '#536f4a', '#3d5b37'],
+        wallLeft: '#2e472b',
+        wallRight: '#22361f',
+        wallStroke: '#5c764f',
+        wallHighlight: '#7c9968',
+        wallCapShadow: '#24381f',
+        wallAmbient: '#47633e',
+        grime: 'rgba(53, 80, 42, 0.18)',
+        fallbackFloor: '#2e4627',
+        fallbackStroke: '#48623e'
     },
     dungeon0: {
         base: ['#262019', '#221c16', '#2a231b', '#1f1a14'],
@@ -635,6 +1066,10 @@ TileMap.PALETTES = {
         wallLeft: '#1e1814',
         wallRight: '#15100d',
         wallStroke: '#4a3b30',
+        wallHighlight: '#5f5042',
+        wallCapShadow: '#17120f',
+        wallAmbient: '#3b3027',
+        grime: 'rgba(58, 44, 28, 0.2)',
         fallbackFloor: '#1c1712',
         fallbackStroke: '#2b2118'
     },
@@ -645,6 +1080,10 @@ TileMap.PALETTES = {
         wallLeft: '#1a212c',
         wallRight: '#11161e',
         wallStroke: '#46546c',
+        wallHighlight: '#5f7392',
+        wallCapShadow: '#161c26',
+        wallAmbient: '#314052',
+        grime: 'rgba(38, 60, 84, 0.18)',
         fallbackFloor: '#161b23',
         fallbackStroke: '#242d3a'
     },
@@ -655,6 +1094,10 @@ TileMap.PALETTES = {
         wallLeft: '#26160f',
         wallRight: '#1a0e09',
         wallStroke: '#6a4030',
+        wallHighlight: '#7a4a34',
+        wallCapShadow: '#20110d',
+        wallAmbient: '#4a2b1e',
+        grime: 'rgba(94, 32, 16, 0.18)',
         fallbackFloor: '#221410',
         fallbackStroke: '#35201a'
     }
@@ -821,7 +1264,7 @@ class Player {
 
     gainExp(amount) {
         this.exp += amount;
-        let leveledUp = false;
+        let levelsGained = 0;
         
         while (this.exp >= this.nextExp) {
             this.exp -= this.nextExp;
@@ -831,9 +1274,9 @@ class Player {
             this.baseMaxHp += 15;
             this.baseMaxMp += 10;
             this.nextExp = Math.floor(this.nextExp * 1.35);
-            leveledUp = true;
+            levelsGained++;
         }
-        return leveledUp;
+        return levelsGained;
     }
 
     refillResources() {
@@ -1138,6 +1581,9 @@ class Monster {
         this.dashCooldown = 90;  // zombie: frames until next lunge
         this.splitGen = 0;       // slime: split generation (caps recursion)
         this.bodyColor = '#b0a89f';
+        this.path = [];
+        this.pathTargetCell = '';
+        this.pathRecomputeTimer = 0;
 
         this.animTimer = Math.random() * 10;
         this.animSpeed = 0.1;
@@ -1251,6 +1697,49 @@ class Monster {
         }
     }
 
+    moveDirectlyToward(targetX, targetY, speed, map) {
+        const dx = targetX - this.x;
+        const dy = targetY - this.y;
+        const distance = Math.hypot(dx, dy);
+        if (distance <= 0) return true;
+
+        const vx = (dx / distance) * speed;
+        const vy = (dy / distance) * speed;
+        const before = distance;
+        if (!map.isSolid(this.x + vx, this.y)) this.x += vx;
+        if (!map.isSolid(this.x, this.y + vy)) this.y += vy;
+        return Math.hypot(targetX - this.x, targetY - this.y) < before - 0.01;
+    }
+
+    followCachedPath(speed, map) {
+        while (this.path.length > 0) {
+            const waypoint = this.path[0];
+            if (Math.hypot(waypoint.x - this.x, waypoint.y - this.y) > Math.max(4, speed * 1.5)) break;
+            this.path.shift();
+        }
+        if (this.path.length === 0) return false;
+        return this.moveDirectlyToward(this.path[0].x, this.path[0].y, speed, map);
+    }
+
+    moveTowardWithPath(targetX, targetY, speed, map) {
+        const targetCell = gridCellKey(
+            Math.floor(targetY / map.tileSize),
+            Math.floor(targetX / map.tileSize)
+        );
+        const targetChanged = targetCell !== this.pathTargetCell;
+
+        if (this.path.length > 0 && (!targetChanged || this.pathRecomputeTimer > 0)) {
+            if (this.followCachedPath(speed, map)) return;
+        }
+        if (this.path.length === 0 && this.moveDirectlyToward(targetX, targetY, speed, map)) return;
+        if (this.pathRecomputeTimer > 0) return;
+
+        this.path = findGridPath(map, this.x, this.y, targetX, targetY);
+        this.pathTargetCell = targetCell;
+        this.pathRecomputeTimer = 15 + Math.floor(Math.random() * 16);
+        this.followCachedPath(speed, map);
+    }
+
     update(player, map) {
         if (this.state === 'death') {
             this.deathTimer--;
@@ -1259,6 +1748,7 @@ class Monster {
 
         if (this.attackCooldown > 0) this.attackCooldown--;
         if (this.slowTimer > 0) this.slowTimer--;
+        if (this.pathRecomputeTimer > 0) this.pathRecomputeTimer--;
         let moveSpeed = this.slowTimer > 0 ? this.speed * 0.5 : this.speed;
 
         const dx = player.x - this.x;
@@ -1315,7 +1805,9 @@ class Monster {
                 let move = 0;
                 if (dist > preferred + 40) move = moveSpeed;        // close in
                 else if (dist < preferred - 40) move = -moveSpeed;  // back away
-                if (move !== 0 && dist > 0) {
+                if (move > 0 && dist > 0) {
+                    this.moveTowardWithPath(player.x, player.y, move, map);
+                } else if (move < 0 && dist > 0) {
                     const vx = (dx / dist) * move;
                     const vy = (dy / dist) * move;
                     if (!map.isSolid(this.x + vx, this.y)) this.x += vx;
@@ -1354,11 +1846,7 @@ class Monster {
             if (angle < 0) angle += Math.PI * 2;
             this.direction = Math.round(angle / (Math.PI / 4)) % 8;
 
-            const newX = this.x + vx;
-            const newY = this.y + vy;
-
-            if (!map.isSolid(newX, this.y)) this.x = newX;
-            if (!map.isSolid(this.x, newY)) this.y = newY;
+            this.moveTowardWithPath(player.x, player.y, kindSpeed, map);
         }
 
         if (dist <= (this.rank === 'boss' ? 36 : 24) && this.attackCooldown === 0) {
@@ -1376,7 +1864,7 @@ class Monster {
         if (this.state === 'death') return 0;
 
         const resist = this.resists[type] || 0;
-        const final = Math.max(1, Math.floor(amount * (1 - resist)));
+        const final = Math.max(0, Math.floor(amount * (1 - resist)));
 
         // Track the player's biggest single hit for the run-over summary
         if (window.game && final > (window.game.maxHit || 0)) window.game.maxHit = final;
@@ -1384,7 +1872,7 @@ class Monster {
         // Damage numbers take the element's tint so hits read at a glance
         const dmgColor = { fire: '#ff8844', cold: '#9adcff', lightning: '#d9b3ff', physical: '#ffcc00' }[type] || '#ffcc00';
         this.hp -= final;
-        floaters.add(this.x, this.y - 12, final.toString(), dmgColor);
+        floaters.add(this.x, this.y - 12, final > 0 ? final.toString() : 'IMMUNE', final > 0 ? dmgColor : '#aaaaaa');
 
         if (this.hp <= 0) {
             this.state = 'death';
@@ -1900,10 +2388,18 @@ class Prop {
     // Light radius for the dungeon darkness pass (0 = not a light source)
     lightRadius() {
         if (this.type === 'torch') return 105 + Math.sin(this.animTimer * 4) * 8;
+        if (this.type === 'brazier') return 140 + Math.sin(this.animTimer * 3) * 10;
         if (this.type === 'campfire') return 130 + Math.sin(this.animTimer * 3) * 10;
         if (this.type === 'chest' && !this.opened) return 70;
         if (this.type === 'altar' && !this.used) return 80;
         return 0;
+    }
+
+    glowTone() {
+        if (this.type === 'torch' || this.type === 'brazier' || this.type === 'campfire') return '255, 156, 84';
+        if (this.type === 'altar' && !this.used) return '200, 48, 48';
+        if (this.type === 'chest' && !this.opened) return '255, 210, 120';
+        return null;
     }
 
     render(ctx, camera, viewWidth, viewHeight) {
@@ -2041,6 +2537,49 @@ Prop.RENDERERS = {
         ctx.fillStyle = 'rgba(255,255,255,0.12)';
         ctx.beginPath();
         ctx.ellipse(x - 2.5, y - 8, 2, 4.5, -0.3, 0, Math.PI * 2);
+        ctx.fill();
+    },
+
+    rubble(ctx, x, y, p) {
+        ctx.fillStyle = 'rgba(0,0,0,0.28)';
+        ctx.beginPath();
+        ctx.ellipse(x, y + 2, 14, 7, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#625346';
+        for (let i = 0; i < 4; i++) {
+            const rx = x - 10 + i * 6 + ((p.seed + i) % 3);
+            const ry = y - 6 + ((p.seed >> i) % 4);
+            ctx.beginPath();
+            ctx.moveTo(rx - 4, ry + 2);
+            ctx.lineTo(rx, ry - 2);
+            ctx.lineTo(rx + 5, ry + 1);
+            ctx.lineTo(rx + 2, ry + 4);
+            ctx.closePath();
+            ctx.fill();
+        }
+    },
+
+    brazier(ctx, x, y, p) {
+        ctx.fillStyle = 'rgba(0,0,0,0.35)';
+        ctx.beginPath();
+        ctx.ellipse(x, y + 2, 12, 6, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#3a3027';
+        ctx.fillRect(x - 3, y - 26, 6, 24);
+        ctx.fillStyle = '#54473b';
+        ctx.beginPath();
+        ctx.ellipse(x, y - 26, 11, 4.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+        const f = Math.sin(p.animTimer * 4 + p.seed) * 2.2;
+        ctx.shadowBlur = 18;
+        ctx.shadowColor = '#ff7b2f';
+        ctx.fillStyle = '#ff5c22';
+        ctx.beginPath();
+        ctx.ellipse(x, y - 34 - f * 0.4, 5.5, 9 + f, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ffd26c';
+        ctx.beginPath();
+        ctx.ellipse(x, y - 33 - f * 0.25, 2.8, 5 + f * 0.5, 0, 0, Math.PI * 2);
         ctx.fill();
     },
 
@@ -2197,6 +2736,83 @@ Prop.RENDERERS = {
         ctx.beginPath();
         ctx.ellipse(x, y - 6 - f * 0.3, 3, 6 + f * 0.6, 0, 0, Math.PI * 2);
         ctx.fill();
+    },
+
+    shrub(ctx, x, y, p) {
+        ctx.fillStyle = 'rgba(0,0,0,0.25)';
+        ctx.beginPath();
+        ctx.ellipse(x, y + 1, 16, 7, 0, 0, Math.PI * 2);
+        ctx.fill();
+        const greens = ['#466b37', '#5e844b', '#35552d'];
+        for (let i = 0; i < 5; i++) {
+            ctx.fillStyle = greens[(p.seed + i) % greens.length];
+            ctx.beginPath();
+            ctx.arc(x - 10 + i * 5, y - 8 - (i % 2) * 3, 5 + (i % 3), 0, Math.PI * 2);
+            ctx.fill();
+        }
+    },
+
+    planter(ctx, x, y, p) {
+        ctx.fillStyle = 'rgba(0,0,0,0.28)';
+        ctx.beginPath();
+        ctx.ellipse(x, y + 2, 13, 6, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#6f5432';
+        ctx.beginPath();
+        ctx.moveTo(x - 12, y - 6);
+        ctx.lineTo(x + 12, y - 6);
+        ctx.lineTo(x + 8, y + 6);
+        ctx.lineTo(x - 8, y + 6);
+        ctx.closePath();
+        ctx.fill();
+        const blooms = ['#d97f58', '#f0d98a', '#d977c0'];
+        for (let i = 0; i < 4; i++) {
+            ctx.strokeStyle = '#4c7a3a';
+            ctx.beginPath();
+            ctx.moveTo(x - 7 + i * 5, y - 4);
+            ctx.lineTo(x - 7 + i * 5, y - 13 - (i % 2) * 2);
+            ctx.stroke();
+            ctx.fillStyle = blooms[(p.seed + i) % blooms.length];
+            ctx.beginPath();
+            ctx.arc(x - 7 + i * 5, y - 14 - (i % 2) * 2, 2, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    },
+
+    signpost(ctx, x, y) {
+        ctx.fillStyle = 'rgba(0,0,0,0.25)';
+        ctx.beginPath();
+        ctx.ellipse(x, y + 2, 9, 4, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#4d3822';
+        ctx.fillRect(x - 2, y - 24, 4, 25);
+        ctx.fillStyle = '#7a5c37';
+        ctx.beginPath();
+        ctx.moveTo(x + 1, y - 20);
+        ctx.lineTo(x + 18, y - 24);
+        ctx.lineTo(x + 18, y - 14);
+        ctx.lineTo(x + 1, y - 10);
+        ctx.closePath();
+        ctx.fill();
+    },
+
+    streetlamp(ctx, x, y, p) {
+        ctx.fillStyle = 'rgba(0,0,0,0.25)';
+        ctx.beginPath();
+        ctx.ellipse(x, y + 2, 9, 4.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#3f3126';
+        ctx.fillRect(x - 2, y - 28, 4, 29);
+        ctx.strokeStyle = '#5d4736';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(x, y - 28);
+        ctx.quadraticCurveTo(x + 7, y - 35, x + 12, y - 28);
+        ctx.stroke();
+        ctx.fillStyle = '#d9b056';
+        ctx.fillRect(x + 8, y - 28, 8, 11);
+        ctx.fillStyle = `rgba(255, 214, 120, ${0.45 + Math.sin(p.animTimer * 2.4) * 0.1})`;
+        ctx.fillRect(x + 10, y - 26, 4, 7);
     },
 
     fence(ctx, x, y) {
@@ -2424,8 +3040,14 @@ class Game {
         this.townProps = this.buildTownProps();
         this.particles = this.initParticles();
         this.lightCanvas = null;
+        this.lightCtx = null;
+        this.lightScale = 0.5;
         const minimapEl = document.getElementById('minimap');
         this.minimapCtx = minimapEl ? minimapEl.getContext('2d') : null;
+        this.minimapBaseCanvas = null;
+        this.minimapBaseCtx = null;
+        this.minimapDirty = true;
+        this.renderEntities = [];
 
         this.monsters = [];
         this.projectiles = [];
@@ -2450,11 +3072,17 @@ class Game {
         this.keys = {};
         this.maxHit = 0;
         this.runStartTime = 0;
+        this.fixedStepMs = 1000 / 60;
+        this.maxFrameDeltaMs = 250;
+        this.maxCatchUpSteps = 5;
+        this.lastFrameTimeMs = null;
+        this.accumulatorMs = 0;
 
         this.castTimer = 0;
         this.castDuration = 0;
         this.castAction = null;
         this.castName = '';
+        this.manaUiSignature = '';
 
         this.player.setClass('warrior');
 
@@ -2471,6 +3099,58 @@ class Game {
 
         this.resize();
         window.addEventListener('resize', () => this.resize());
+    }
+
+    swapInventorySlots(src, dst) {
+        if (!Number.isInteger(src) || !Number.isInteger(dst) || src === dst) return false;
+        if (src < 0 || dst < 0 || src >= this.inventory.length || dst >= this.inventory.length) return false;
+        if (!this.inventory[src]) return false;
+
+        const tmp = this.inventory[dst];
+        this.inventory[dst] = this.inventory[src];
+        this.inventory[src] = tmp;
+
+        if (this.selectedGemIdx === src) this.selectedGemIdx = dst;
+        else if (this.selectedGemIdx === dst) this.selectedGemIdx = src;
+        return true;
+    }
+
+    socketGem(gemIndex, targetIndex) {
+        const gem = this.inventory.at(gemIndex);
+        const item = this.inventory.at(targetIndex);
+        if (!gem || gem.type !== 'gem' || !item) return false;
+        if (!item.sockets || (item.gems ? item.gems.length : 0) >= item.sockets) return false;
+
+        if (!item.gems) item.gems = [];
+        item.gems.push(gem);
+        if (typeof gem.stat === 'string') {
+            item.stat += `\n${gem.name}: ${gem.stat.replace('소켓 장착 시: ', '')}`;
+        }
+        this.inventory[gemIndex] = null;
+        this.selectedGemIdx = null;
+        this.player.recalculateStats(this.inventory);
+        return true;
+    }
+
+    toggleEquipment(index) {
+        const item = this.inventory.at(index);
+        if (!item || item.type === 'gem' || item.slot === 'potion') {
+            return { ok: false, reason: 'invalid' };
+        }
+        if (!item.equipped && this.player.level < (item.reqLevel || 1)) {
+            return { ok: false, reason: 'level' };
+        }
+
+        if (item.equipped) {
+            item.equipped = false;
+        } else {
+            this.inventory.forEach(otherItem => {
+                if (otherItem && otherItem.slot === item.slot) otherItem.equipped = false;
+            });
+            item.equipped = true;
+        }
+        this.player.recalculateStats(this.inventory);
+        return { ok: true, equipped: item.equipped };
     }
 
     setupUI() {
@@ -2592,8 +3272,11 @@ class Game {
             this.player.recalculateStats(this.inventory);
             this.buildSkillsPanel();
             this.updateUI();
+            document.body.classList.add('game-started');
             guidePanel.classList.add('hidden');
             this.isGameRunning = true;
+            this.lastFrameTimeMs = performance.now();
+            this.accumulatorMs = 0;
             this.runStartTime = Date.now();
             this.maxHit = 0;
             this.spawnInitialMonsters();
@@ -2760,14 +3443,7 @@ class Game {
                 const dst = parseInt(slot.dataset.slot);
                 if (src === null || src === undefined || src === dst) return;
 
-                // Swap (moving onto an empty slot leaves the source empty)
-                const tmp = this.inventory[dst];
-                this.inventory[dst] = this.inventory[src];
-                this.inventory[src] = tmp;
-
-                // Keep the selected-gem highlight pointing at the same item
-                if (this.selectedGemIdx === src) this.selectedGemIdx = dst;
-                else if (this.selectedGemIdx === dst) this.selectedGemIdx = src;
+                if (!this.swapInventorySlots(src, dst)) return;
 
                 sfx.init();
                 this.syncInventoryUI();
@@ -2827,11 +3503,7 @@ class Game {
                     } else if (this.selectedGemIdx !== null) {
                         // Socket the selected gem into this equipment
                         const gem = this.inventory.at(this.selectedGemIdx);
-                        if (gem && item.sockets && (item.gems ? item.gems.length : 0) < item.sockets) {
-                            if (!item.gems) item.gems = [];
-                            item.gems.push(gem);
-                            item.stat += `\n${gem.name}: ${gem.stat.replace('소켓 장착 시: ', '')}`;
-                            this.inventory[this.selectedGemIdx] = null;
+                        if (this.socketGem(this.selectedGemIdx, idx)) {
                             sfx.playPotion();
                             this.floaters.add(this.player.x, this.player.y - 15, `${gem.name} 소켓 장착!`, gem.color);
                         } else {
@@ -2841,23 +3513,17 @@ class Game {
                         this.selectedGemIdx = null;
                     } else {
                         // Weapon/Armor Equip Toggle
-                        if (item.equipped) {
-                            item.equipped = false;
+                        const result = this.toggleEquipment(idx);
+                        if (!result.ok && result.reason === 'level') {
+                            sfx.playHit();
+                            this.floaters.add(this.player.x, this.player.y - 15, "레벨 부족!", "#ff3333");
+                            return;
+                        }
+                        if (!result.ok) return;
+                        if (!result.equipped) {
                             sfx.playMonsterDeath(); 
                             this.floaters.add(this.player.x, this.player.y - 15, "장착 해제", "#aaaaaa");
                         } else {
-                            if (this.player.level < (item.reqLevel || 1)) {
-                                sfx.playHit();
-                                this.floaters.add(this.player.x, this.player.y - 15, "레벨 부족!", "#ff3333");
-                                return;
-                            }
-                            // Unequip any other item of the same slot first
-                            this.inventory.forEach(otherItem => {
-                                if (otherItem && otherItem.slot === item.slot) {
-                                    otherItem.equipped = false;
-                                }
-                            });
-                            item.equipped = true;
                             sfx.playPotion(); 
                             this.floaters.add(this.player.x, this.player.y - 15, "장착됨!", "#d4af37");
                         }
@@ -3190,27 +3856,46 @@ class Game {
                 );
                 if (Math.hypot(centerPos.x - stairs.x, centerPos.y - stairs.y) > t) {
                     const roll = Math.random();
-                    if (roll < 0.35) {
+                    if (roll < 0.28) {
                         props.push(new Prop(centerPos.x, centerPos.y, 'sarcophagus'));
-                    } else if (roll < 0.6) {
+                    } else if (roll < 0.5) {
                         const leftPos = map.tileToWorld(room.c + 1, room.r + Math.floor(room.h / 2));
                         const rightPos = map.tileToWorld(room.c + room.w - 2, room.r + Math.floor(room.h / 2));
                         props.push(new Prop(leftPos.x, leftPos.y, 'pillar'));
                         props.push(new Prop(rightPos.x, rightPos.y, 'pillar'));
+                    } else if (roll < 0.72) {
+                        props.push(new Prop(centerPos.x, centerPos.y, 'brazier'));
+                    } else {
+                        props.push(new Prop(centerPos.x - 18, centerPos.y + 8, 'rubble'));
+                        props.push(new Prop(centerPos.x + 20, centerPos.y - 6, Math.random() < 0.5 ? 'bones' : 'jar'));
                     }
                 }
             }
+
+            const relicSpots = [
+                [room.c + 1, room.r + 1],
+                [room.c + room.w - 2, room.r + 1],
+                [room.c + 1, room.r + room.h - 2],
+                [room.c + room.w - 2, room.r + room.h - 2]
+            ].sort(() => Math.random() - 0.5);
+            relicSpots.slice(0, Math.min(2, relicSpots.length)).forEach(([cc, rr], idx) => {
+                const pos = map.tileToWorld(cc, rr);
+                const accentRoll = (room.c + room.r + idx + i) % 3;
+                props.push(new Prop(pos.x, pos.y, accentRoll === 0 ? 'rubble' : (accentRoll === 1 ? 'bones' : 'jar')));
+            });
         });
 
         // scattered debris on random floor tiles, away from spawn and stairs
-        for (let k = 0; k < 10; k++) {
+        for (let k = 0; k < 18; k++) {
             const c = 2 + Math.floor(Math.random() * (map.cols - 4));
             const r = 2 + Math.floor(Math.random() * (map.rows - 4));
             const pos = map.tileToWorld(c, r);
             if (map.grid[r][c] !== 0) continue;
             if (Math.hypot(pos.x - map.spawnPoint.x, pos.y - map.spawnPoint.y) < t * 2) continue;
             if (Math.hypot(pos.x - stairs.x, pos.y - stairs.y) < t * 1.5) continue;
-            props.push(new Prop(pos.x, pos.y, Math.random() < 0.5 ? 'bones' : 'jar'));
+            const roll = Math.random();
+            const debrisType = roll < 0.4 ? 'rubble' : (roll < 0.7 ? 'bones' : 'jar');
+            props.push(new Prop(pos.x, pos.y, debrisType));
         }
 
         // Special interactables: a treasure chest, a blood altar, and traps.
@@ -3237,6 +3922,7 @@ class Game {
         const trapTarget = 4 + Math.floor(Math.random() * 3);
         let placed = 0;
         let trapAttempts = 0;
+        const occupiedTrapCells = new Set();
         while (placed < trapTarget && trapAttempts < 200) {
             trapAttempts++;
             const c = 2 + Math.floor(Math.random() * (map.cols - 4));
@@ -3245,10 +3931,20 @@ class Game {
             const pos = map.tileToWorld(c, r);
             if (Math.hypot(pos.x - map.spawnPoint.x, pos.y - map.spawnPoint.y) < t * 3) continue;
             if (Math.hypot(pos.x - stairs.x, pos.y - stairs.y) < t * 1.5) continue;
+            if (!claimGridCell(occupiedTrapCells, r, c)) continue;
             const trap = new Prop(pos.x, pos.y, 'trap');
             trap.cooldown = 0;
             props.push(trap);
             placed++;
+        }
+
+        if (map.bossPoint) {
+            [-1, 1].forEach(dir => {
+                const pos = { x: map.bossPoint.x + dir * (t * 0.55), y: map.bossPoint.y + t * 0.22 };
+                if (Math.hypot(pos.x - stairs.x, pos.y - stairs.y) > t) {
+                    props.push(new Prop(pos.x, pos.y, 'brazier'));
+                }
+            });
         }
 
         props.push(new Prop(stairs.x, stairs.y, 'stairs'));
@@ -3273,23 +3969,42 @@ class Game {
         at(5, 8, 'campfire');
         at(10, 4, 'crate');
         at(12, 5, 'crate');
+        at(8, 12, 'streetlamp');
+        at(6, 8, 'planter');
+        at(10, 8, 'planter');
+        at(9, 10, 'signpost');
+        at(3, 9, 'shrub');
+        at(13, 9, 'shrub');
+        at(4, 11, 'planter');
+        at(12, 11, 'planter');
         [3, 4, 5].forEach(c => at(c, 12, 'fence'));
         [10, 11, 12].forEach(c => at(c, 12, 'fence'));
         return props;
     }
 
+    resetParticle(p, mapType = this.currentMap, randomizePosition = false) {
+        const w = this.canvas?.width || window.innerWidth;
+        const h = this.canvas?.height || window.innerHeight;
+        const town = mapType === 'town';
+        p.mapType = mapType;
+        p.kind = town
+            ? (Math.random() < 0.2 ? 'firefly' : (Math.random() < 0.6 ? 'pollen' : 'leaf'))
+            : (Math.random() < 0.28 ? 'ember' : (Math.random() < 0.7 ? 'ash' : 'dust'));
+        p.x = Math.random() * w;
+        p.y = randomizePosition ? Math.random() * h : h + Math.random() * 30;
+        p.vx = town ? (Math.random() - 0.5) * 0.35 : (Math.random() - 0.5) * 0.18;
+        p.vy = town ? (-0.05 - Math.random() * 0.05) : (-0.09 - Math.random() * 0.18);
+        p.size = town ? (1.2 + Math.random() * 1.8) : (0.8 + Math.random() * 1.6);
+        p.alpha = town ? (0.12 + Math.random() * 0.18) : (0.08 + Math.random() * 0.22);
+        p.phase = Math.random() * Math.PI * 2;
+        p.wobble = 0.3 + Math.random() * 0.7;
+        return p;
+    }
+
     initParticles() {
         const particles = [];
         for (let i = 0; i < 28; i++) {
-            particles.push({
-                x: Math.random() * window.innerWidth,
-                y: Math.random() * window.innerHeight,
-                vx: (Math.random() - 0.5) * 0.2,
-                vy: -0.15 - Math.random() * 0.25,
-                size: 1 + Math.random() * 1.6,
-                alpha: 0.12 + Math.random() * 0.25,
-                phase: Math.random() * Math.PI * 2
-            });
+            particles.push(this.resetParticle({}, this.currentMap, true));
         }
         return particles;
     }
@@ -3298,10 +4013,16 @@ class Game {
         const w = this.canvas.width;
         const h = this.canvas.height;
         for (const p of this.particles) {
-            p.x += p.vx;
-            p.y += p.vy;
+            if (p.mapType !== this.currentMap) {
+                this.resetParticle(p, this.currentMap, true);
+            }
+            p.x += p.vx + Math.sin(p.phase * (p.kind === 'firefly' ? 1.7 : 1.1)) * 0.18 * p.wobble;
+            p.y += p.vy + (p.kind === 'leaf' ? Math.cos(p.phase) * 0.04 : 0);
             p.phase += 0.03;
-            if (p.y < -10) { p.y = h + 10; p.x = Math.random() * w; }
+            if (p.kind === 'firefly') {
+                p.y += Math.sin(p.phase * 1.4) * 0.08;
+            }
+            if (p.y < -10) { this.resetParticle(p, this.currentMap); }
             if (p.x < -10) p.x = w + 10;
             if (p.x > w + 10) p.x = -10;
         }
@@ -3309,13 +4030,21 @@ class Game {
 
     renderParticles() {
         const ctx = this.ctx;
-        const ember = this.currentMap === 'dungeon';
         ctx.save();
         for (const p of this.particles) {
             const twinkle = p.alpha * (0.6 + Math.sin(p.phase) * 0.4);
-            ctx.fillStyle = ember
+            const color = p.kind === 'ember'
                 ? `rgba(255, 150, 70, ${twinkle})`
-                : `rgba(190, 230, 150, ${twinkle * 0.8})`;
+                : p.kind === 'ash'
+                    ? `rgba(180, 170, 160, ${twinkle * 0.55})`
+                    : p.kind === 'dust'
+                        ? `rgba(110, 100, 90, ${twinkle * 0.38})`
+                        : p.kind === 'firefly'
+                            ? `rgba(255, 233, 140, ${twinkle * 0.9})`
+                            : p.kind === 'leaf'
+                                ? `rgba(118, 165, 88, ${twinkle * 0.6})`
+                                : `rgba(206, 229, 150, ${twinkle * 0.72})`;
+            ctx.fillStyle = color;
             ctx.beginPath();
             ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
             ctx.fill();
@@ -3323,27 +4052,42 @@ class Game {
         ctx.restore();
     }
 
+    ensureLightSurface() {
+        const scale = this.lightScale;
+        const width = Math.max(1, Math.ceil(this.canvas.width * scale));
+        const height = Math.max(1, Math.ceil(this.canvas.height * scale));
+
+        if (!this.lightCanvas) {
+            this.lightCanvas = document.createElement('canvas');
+            this.lightCtx = this.lightCanvas.getContext('2d');
+        }
+        if (this.lightCanvas.width !== width || this.lightCanvas.height !== height) {
+            this.lightCanvas.width = width;
+            this.lightCanvas.height = height;
+        }
+        if (!this.lightCtx) {
+            this.lightCtx = this.lightCanvas.getContext('2d');
+        }
+
+        return { lctx: this.lightCtx, scale, width, height };
+    }
+
     // Darkness overlay with light holes punched out (dungeon only)
     renderLighting() {
         if (this.currentMap !== 'dungeon') return;
 
-        if (!this.lightCanvas) {
-            this.lightCanvas = document.createElement('canvas');
-        }
-        if (this.lightCanvas.width !== this.canvas.width || this.lightCanvas.height !== this.canvas.height) {
-            this.lightCanvas.width = this.canvas.width;
-            this.lightCanvas.height = this.canvas.height;
-        }
-
-        const lctx = this.lightCanvas.getContext('2d');
+        const { lctx, scale, width, height } = this.ensureLightSurface();
         lctx.globalCompositeOperation = 'source-over';
-        lctx.clearRect(0, 0, this.lightCanvas.width, this.lightCanvas.height);
+        lctx.clearRect(0, 0, width, height);
         lctx.fillStyle = 'rgba(0, 0, 0, 0.93)';
-        lctx.fillRect(0, 0, this.lightCanvas.width, this.lightCanvas.height);
+        lctx.fillRect(0, 0, width, height);
 
         const lights = [];
+        const bloomLights = [];
         const pPos = this.worldToScreen(this.player.x, this.player.y);
-        lights.push({ x: pPos.x, y: pPos.y - 30 * this.zoom, r: 290 });
+        const playerLight = { x: pPos.x, y: pPos.y - 30 * this.zoom, r: 290, glow: '200, 190, 150', glowAlpha: 0.08 };
+        lights.push(playerLight);
+        bloomLights.push(playerLight);
 
         for (const proj of this.projectiles) {
             const pos = this.worldToScreen(proj.x, proj.y);
@@ -3351,31 +4095,59 @@ class Game {
         }
         if (this.dungeonPortal) {
             const pos = this.worldToScreen(this.dungeonPortal.x, this.dungeonPortal.y);
-            lights.push({ x: pos.x, y: pos.y, r: 130 });
+            const portalLight = { x: pos.x, y: pos.y, r: 130, glow: '100, 220, 255', glowAlpha: 0.14 };
+            lights.push(portalLight);
+            bloomLights.push(portalLight);
         }
         for (const prop of this.props) {
             const r = prop.lightRadius();
             if (r > 0) {
                 const pos = this.worldToScreen(prop.x, prop.y);
-                lights.push({ x: pos.x, y: pos.y - 28 * this.zoom, r });
+                const light = {
+                    x: pos.x,
+                    y: pos.y - 28 * this.zoom,
+                    r,
+                    glow: prop.glowTone(),
+                    glowAlpha: prop.type === 'brazier' ? 0.16 : 0.11
+                };
+                lights.push(light);
+                if (light.glow) bloomLights.push(light);
             }
         }
 
         lctx.globalCompositeOperation = 'destination-out';
         for (const light of lights) {
-            const radius = light.r * this.zoom;
-            const grad = lctx.createRadialGradient(light.x, light.y, 0, light.x, light.y, radius);
+            const lx = light.x * scale;
+            const ly = light.y * scale;
+            const radius = light.r * this.zoom * scale;
+            const grad = lctx.createRadialGradient(lx, ly, 0, lx, ly, radius);
             grad.addColorStop(0, 'rgba(0, 0, 0, 1)');
             grad.addColorStop(0.55, 'rgba(0, 0, 0, 0.75)');
             grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
             lctx.fillStyle = grad;
             lctx.beginPath();
-            lctx.arc(light.x, light.y, radius, 0, Math.PI * 2);
+            lctx.arc(lx, ly, radius, 0, Math.PI * 2);
             lctx.fill();
         }
         lctx.globalCompositeOperation = 'source-over';
 
-        this.ctx.drawImage(this.lightCanvas, 0, 0);
+        this.ctx.drawImage(this.lightCanvas, 0, 0, this.canvas.width, this.canvas.height);
+        this.ctx.save();
+        this.ctx.globalCompositeOperation = 'screen';
+        const bloomLimit = Math.min(bloomLights.length, 6);
+        for (let i = 0; i < bloomLimit; i++) {
+            const light = bloomLights[i];
+            const radius = light.r * this.zoom * 0.82;
+            const bloom = this.ctx.createRadialGradient(light.x, light.y, 0, light.x, light.y, radius);
+            bloom.addColorStop(0, `rgba(${light.glow}, ${light.glowAlpha || 0.1})`);
+            bloom.addColorStop(0.55, `rgba(${light.glow}, ${(light.glowAlpha || 0.1) * 0.45})`);
+            bloom.addColorStop(1, `rgba(${light.glow}, 0)`);
+            this.ctx.fillStyle = bloom;
+            this.ctx.beginPath();
+            this.ctx.arc(light.x, light.y, radius, 0, Math.PI * 2);
+            this.ctx.fill();
+        }
+        this.ctx.restore();
     }
 
     // Collect on-screen wall tiles as depth-sorted drawables; walls covering
@@ -3391,32 +4163,25 @@ class Game {
         const py = pIso.y - isoCam.y + hh;
         const playerDepth = this.player.x + this.player.y;
 
-        for (let r = 0; r < map.rows; r++) {
-            for (let c = 0; c < map.cols; c++) {
-                if (map.grid[r][c] !== 1) continue;
+        for (const cell of map.wallCells) {
+            const sx = cell.isoX - isoCam.x + hw;
+            const sy = cell.isoY - isoCam.y + hh;
 
-                const cartX = c * map.tileSize + map.tileSize / 2;
-                const cartY = r * map.tileSize + map.tileSize / 2;
-                const sx = (cartX - cartY) - isoCam.x + hw;
-                const sy = (cartX + cartY) * 0.5 - isoCam.y + hh;
-
-                const buffer = 160;
-                if (sx < -buffer || sx > this.canvas.width + buffer ||
-                    sy < -buffer || sy > this.canvas.height + buffer) {
-                    continue;
-                }
-
-                const depth = cartX + cartY;
-                let alpha = 1;
-                if (depth > playerDepth && Math.abs(sx - px) < 72 && sy - py > -8 && sy - py < 100) {
-                    alpha = 0.4;
-                }
-
-                entities.push({
-                    depth,
-                    render: () => map.renderWallTile(this.ctx, sx, sy, r, c, alpha)
-                });
+            const buffer = 160;
+            if (sx < -buffer || sx > this.canvas.width + buffer ||
+                sy < -buffer || sy > this.canvas.height + buffer) {
+                continue;
             }
+
+            let alpha = 1;
+            if (cell.depth > playerDepth && Math.abs(sx - px) < 72 && sy - py > -8 && sy - py < 100) {
+                alpha = 0.4;
+            }
+
+            cell.screenX = sx;
+            cell.screenY = sy;
+            cell.alpha = alpha;
+            entities.push(cell);
         }
     }
 
@@ -3432,6 +4197,7 @@ class Game {
         this.dungeonPortal = null;
         this.townPortal = null;
         this.props = this.buildDungeonProps(this.dungeonMap);
+        this.minimapDirty = true;
 
         const spawn = this.dungeonMap.spawnPoint;
         this.player.x = spawn.x;
@@ -3459,15 +4225,20 @@ class Game {
         const map = this.map;
         const pc = Math.floor(this.player.x / map.tileSize);
         const pr = Math.floor(this.player.y / map.tileSize);
+        let revealedNewTile = false;
         for (let dr = -5; dr <= 5; dr++) {
             for (let dc = -5; dc <= 5; dc++) {
                 const r = pr + dr;
                 const c = pc + dc;
                 if (r >= 0 && r < map.rows && c >= 0 && c < map.cols) {
-                    map.explored[r][c] = true;
+                    if (!map.explored[r][c]) {
+                        map.explored[r][c] = true;
+                        revealedNewTile = true;
+                    }
                 }
             }
         }
+        if (revealedNewTile) this.minimapDirty = true;
     }
 
     renderMinimap() {
@@ -3477,20 +4248,39 @@ class Game {
         mm.clearRect(0, 0, size, size);
         if (!this.isGameRunning) return;
 
+        if (!this.minimapBaseCanvas) {
+            this.minimapBaseCanvas = document.createElement('canvas');
+            this.minimapBaseCtx = this.minimapBaseCanvas.getContext('2d');
+        }
+        if (this.minimapBaseCanvas.width !== size || this.minimapBaseCanvas.height !== size) {
+            this.minimapBaseCanvas.width = size;
+            this.minimapBaseCanvas.height = size;
+            this.minimapDirty = true;
+        }
+
         const map = this.map;
         const px = size / Math.max(map.cols, map.rows);
         const isTown = this.currentMap === 'town';
 
-        for (let r = 0; r < map.rows; r++) {
-            for (let c = 0; c < map.cols; c++) {
-                if (!map.explored[r][c]) continue;
-                if (map.grid[r][c] === 1) {
-                    mm.fillStyle = isTown ? 'rgba(90, 140, 90, 0.7)' : 'rgba(185, 165, 135, 0.6)';
-                } else {
-                    mm.fillStyle = isTown ? 'rgba(50, 90, 50, 0.4)' : 'rgba(110, 100, 85, 0.28)';
+        if (this.minimapDirty && this.minimapBaseCtx) {
+            const base = this.minimapBaseCtx;
+            base.clearRect(0, 0, size, size);
+            for (let r = 0; r < map.rows; r++) {
+                for (let c = 0; c < map.cols; c++) {
+                    if (!map.explored[r][c]) continue;
+                    if (map.grid[r][c] === 1) {
+                        base.fillStyle = isTown ? 'rgba(90, 140, 90, 0.7)' : 'rgba(185, 165, 135, 0.6)';
+                    } else {
+                        base.fillStyle = isTown ? 'rgba(50, 90, 50, 0.4)' : 'rgba(110, 100, 85, 0.28)';
+                    }
+                    base.fillRect(c * px, r * px, px + 0.5, px + 0.5);
                 }
-                mm.fillRect(c * px, r * px, px + 0.5, px + 0.5);
             }
+            this.minimapDirty = false;
+        }
+
+        if (this.minimapBaseCanvas) {
+            mm.drawImage(this.minimapBaseCanvas, 0, 0);
         }
 
         const dot = (wx, wy, color, s) => {
@@ -3601,26 +4391,28 @@ class Game {
         return this.monsterFactory.spawnBoss();
     }
 
+    awardPlayerExp(amount) {
+        const levelsGained = this.player.gainExp(amount);
+        this.player.recalculateStats(this.inventory);
+        if (levelsGained > 0) {
+            this.player.refillResources();
+            sfx.playLevelUp();
+            this.triggerLevelUpBanner(levelsGained);
+        }
+        this.updateUI();
+        return levelsGained;
+    }
+
     handleMonsterKill(monster) {
         sfx.playMonsterDeath();
         this.player.kills++;
 
         // Award gold based on monster level and rank
-        const goldDropped = Math.floor(monster.level * (5 + Math.random() * 5) * (monster.goldMult || 1));
+        const goldDropped = goldDropForMonster(monster);
         this.player.gold += goldDropped;
         this.floaters.add(monster.x, monster.y - 10, `+${goldDropped} G`, '#ffd700');
 
-        const isLeveledUp = this.player.gainExp(monster.expValue);
-        if (isLeveledUp) {
-            sfx.playLevelUp();
-            this.triggerLevelUpBanner();
-        }
-
-        this.player.recalculateStats(this.inventory);
-        if (isLeveledUp) {
-            this.player.refillResources();
-        }
-        this.updateUI();
+        this.awardPlayerExp(monster.expValue);
 
         if (monster.rank === 'boss') {
             this.floaters.add(monster.x, monster.y - 25, `${monster.name} 처치!`, '#ff5500');
@@ -3908,19 +4700,25 @@ class Game {
         }
     }
 
-    triggerLevelUpBanner() {
+    triggerLevelUpBanner(levelsGained = 1) {
         const banner = document.getElementById('level-up-banner');
+        if (!banner) return;
+        const label = levelsGained > 1 ? `LEVEL UP! x${levelsGained}` : 'LEVEL UP!';
+        banner.textContent = label;
         banner.classList.remove('hidden');
         const newBanner = banner.cloneNode(true);
+        newBanner.textContent = label;
         // @ts-ignore
         banner.parentNode.replaceChild(newBanner, banner);
-        this.floaters.add(this.player.x, this.player.y - 20, "LEVEL UP!", '#d4af37');
+        this.floaters.add(this.player.x, this.player.y - 20, label, '#d4af37');
     }
 
     changeMap(newMapType) {
         this.currentMap = newMapType;
         this.map = newMapType === 'town' ? this.townMap : this.dungeonMap;
         this.playerMovement.setMap(this.map);
+        this.particles.forEach(p => this.resetParticle(p, newMapType, true));
+        this.minimapDirty = true;
     }
 
     triggerTownPortal() {
@@ -3955,9 +4753,7 @@ class Game {
         document.getElementById('health-liquid').style.height = `${healthPercent}%`;
         document.getElementById('health-value').textContent = `${Math.ceil(this.player.hp)}/${this.player.maxHp}`;
 
-        const manaPercent = (this.player.mp / this.player.maxMp) * 100;
-        document.getElementById('mana-liquid').style.height = `${manaPercent}%`;
-        document.getElementById('mana-value').textContent = `${Math.ceil(this.player.mp)}/${this.player.maxMp}`;
+        this.updateManaUI();
 
         const xpPercent = (this.player.exp / this.player.nextExp) * 100;
         document.getElementById('xp-fill').style.width = `${xpPercent}%`;
@@ -4031,6 +4827,18 @@ class Game {
         }
 
         this.syncInventoryUI();
+    }
+
+    updateManaUI() {
+        const displayMana = Math.ceil(this.player.mp);
+        const signature = `${displayMana}/${this.player.maxMp}`;
+        if (signature === this.manaUiSignature) return false;
+
+        this.manaUiSignature = signature;
+        const manaPercent = (this.player.mp / this.player.maxMp) * 100;
+        document.getElementById('mana-liquid').style.height = `${manaPercent}%`;
+        document.getElementById('mana-value').textContent = signature;
+        return true;
     }
 
     // One-time build of the skills panel: a row per accessible skill with a
@@ -4146,7 +4954,243 @@ class Game {
         this.canvas.height = window.innerHeight;
     }
 
-    run() {
+    updateSimulationStep() {
+        if (!this.isGameRunning) return false;
+
+        if (this.castTimer > 0) {
+            this.player.targetX = this.player.x;
+            this.player.targetY = this.player.y;
+            this.castTimer--;
+            if (this.castTimer <= 0 && this.castAction) {
+                this.castAction();
+                this.castAction = null;
+                this.castDuration = 0;
+                this.castName = '';
+            }
+        }
+        this.processKeyboardMovement();
+        this.player.update(this.map);
+        this.updateManaUI();
+        this.camera.update(this.player.x, this.player.y);
+
+        const activeProps = this.currentMap === 'town' ? this.townProps : this.props;
+        activeProps.forEach(p => p.update());
+        this.updateParticles();
+        this.updateExploration();
+
+        if (this.dungeonPortal) this.dungeonPortal.update();
+        if (this.townPortal) this.townPortal.update();
+        if (this.currentMap === 'town') {
+            this.npc.update();
+            const dist = Math.hypot(this.player.x - this.npc.x, this.player.y - this.npc.y);
+            if (dist > 80) {
+                const shopPanel = document.getElementById('shop-panel');
+                if (shopPanel && !shopPanel.classList.contains('hidden')) {
+                    shopPanel.classList.add('hidden');
+                }
+            }
+        } else {
+            const shopPanel = document.getElementById('shop-panel');
+            if (shopPanel && !shopPanel.classList.contains('hidden')) {
+                shopPanel.classList.add('hidden');
+            }
+        }
+
+        if (this.currentMap === 'dungeon' && this.dungeonPortal) {
+            if (Math.hypot(this.player.x - this.dungeonPortal.x, this.player.y - this.dungeonPortal.y) < 24) {
+                this.changeMap('town');
+                this.player.x = this.townPortal.x + 32;
+                this.player.y = this.townPortal.y + 32;
+                this.player.targetX = this.player.x;
+                this.player.targetY = this.player.y;
+                sfx.playPotion();
+                this.floaters.add(this.player.x, this.player.y - 15, "留덉쓣 ?꾩갑", "#00ffff");
+            }
+        } else if (this.currentMap === 'town' && this.townPortal) {
+            if (Math.hypot(this.player.x - this.townPortal.x, this.player.y - this.townPortal.y) < 24) {
+                const targetX = this.dungeonPortal.x;
+                const targetY = this.dungeonPortal.y;
+                this.dungeonPortal = null;
+                this.townPortal = null;
+                this.changeMap('dungeon');
+                this.player.x = targetX + 32;
+                this.player.y = targetY + 32;
+                this.player.targetX = this.player.x;
+                this.player.targetY = this.player.y;
+                sfx.playPotion();
+                this.floaters.add(this.player.x, this.player.y - 15, "?섏쟾 吏꾩엯", "#ff5500");
+            }
+        }
+
+        if (this.currentMap === 'dungeon') {
+            if (this.stairsMsgCooldown > 0) this.stairsMsgCooldown--;
+            const stairs = this.map.stairsPoint;
+            if (stairs && Math.hypot(this.player.x - stairs.x, this.player.y - stairs.y) < 26) {
+                const bossAlive = this.monsters.some(m => m.rank === 'boss' && m.state !== 'death');
+                if (bossAlive) {
+                    if (this.stairsMsgCooldown <= 0) {
+                        this.stairsMsgCooldown = 90;
+                        sfx.playHit();
+                        this.floaters.add(this.player.x, this.player.y - 20, "蹂댁뒪媛 ?댁븘?덈뒗 ?숈븞 怨꾨떒??遊됱씤?섏뼱 ?덉뒿?덈떎!", '#ff5555');
+                    }
+                } else {
+                    this.descendStairs();
+                }
+            }
+
+            this.handleInteractables();
+
+            this.spawnTimer++;
+            if (this.spawnTimer >= SPAWN_INTERVAL) {
+                this.spawnTimer = 0;
+                this.spawnMonster();
+            }
+
+            for (let i = this.projectiles.length - 1; i >= 0; i--) {
+                const p = this.projectiles.at(i);
+                p.update(this.map);
+
+                const projectileTargets = [...this.monsters];
+                let hitMonster = null;
+                for (const m of projectileTargets) {
+                    if (m.state === 'death') continue;
+                    if (Math.hypot(p.x - m.x, p.y - m.y) < p.radius + m.radius) {
+                        hitMonster = m;
+                        break;
+                    }
+                }
+
+                if (hitMonster) {
+                    const expGained = hitMonster.takeDamage(p.damage, this.floaters, p.type);
+                    if (p.slow) hitMonster.applySlow(p.slow);
+                    if (expGained > 0) this.handleMonsterKill(hitMonster);
+
+                    if (p.splash > 0) {
+                        for (const m of projectileTargets) {
+                            if (m === hitMonster || m.state === 'death') continue;
+                            if (Math.hypot(p.x - m.x, p.y - m.y) <= p.splash + m.radius) {
+                                const exp = m.takeDamage(Math.floor(p.damage * 0.6), this.floaters, p.type);
+                                if (exp > 0) this.handleMonsterKill(m);
+                            }
+                        }
+                        this.effects.push({ type: 'whirlwind', x: p.x, y: p.y, radius: p.splash, color: p.color, life: 10, maxLife: 10 });
+                    }
+                    this.updateUI();
+                }
+
+                if (hitMonster || p.life <= 0) {
+                    this.projectiles.splice(i, 1);
+                }
+            }
+
+            this.effects = this.effects.filter(e => --e.life > 0);
+
+            for (let i = this.monsters.length - 1; i >= 0; i--) {
+                const m = this.monsters.at(i);
+                const dmgToPlayer = m.update(this.player, this.map);
+
+                if (dmgToPlayer > 0) {
+                    this.damagePlayer(dmgToPlayer);
+                    if (!this.isGameRunning) return false;
+                }
+
+                if (m.pendingShot) {
+                    this.enemyProjectiles.push(new EnemyProjectile(
+                        m.x, m.y, m.pendingShot.tx, m.pendingShot.ty, m.pendingShot.dmg
+                    ));
+                    sfx.playFireball();
+                    m.pendingShot = null;
+                }
+
+                if (m.pendingSummon) {
+                    const count = m.pendingSummon;
+                    m.pendingSummon = null;
+                    if (this.monsters.length < MAX_MONSTERS + 6) {
+                        for (let s = 0; s < count; s++) {
+                            const ang = Math.random() * Math.PI * 2;
+                            const minion = new Monster(
+                                m.x + Math.cos(ang) * 40, m.y + Math.sin(ang) * 40,
+                                this.floor * 2, 'normal', 'skeleton'
+                            );
+                            minion.goldMult = 0;
+                            this.monsters.push(minion);
+                        }
+                        this.floaters.add(m.x, m.y - 36, "留앹옄 ?뚰솚!", '#a64dff');
+                        sfx.playBossSpawn();
+                    }
+                }
+
+                if (m.pendingNova) {
+                    const nova = m.pendingNova;
+                    m.pendingNova = null;
+                    this.effects.push({ type: 'whirlwind', x: m.x, y: m.y, radius: nova.radius, color: '#ff5500', life: 22, maxLife: 22 });
+                    sfx.playFireball();
+                    if (Math.hypot(this.player.x - m.x, this.player.y - m.y) <= nova.radius) {
+                        this.damagePlayer(nova.dmg);
+                        if (!this.isGameRunning) return false;
+                    }
+                }
+
+                if (m.state === 'death' && m.deathTimer <= 0) {
+                    this.monsters.splice(i, 1);
+                }
+            }
+
+            for (let i = this.enemyProjectiles.length - 1; i >= 0; i--) {
+                const ep = this.enemyProjectiles.at(i);
+                ep.update(this.map);
+                let consumed = ep.life <= 0;
+                if (Math.hypot(ep.x - this.player.x, ep.y - this.player.y) < ep.radius + this.player.radius) {
+                    this.damagePlayer(ep.damage);
+                    if (!this.isGameRunning) return false;
+                    consumed = true;
+                }
+                if (consumed) this.enemyProjectiles.splice(i, 1);
+            }
+        }
+
+        this.floaters.update();
+        return this.isGameRunning;
+    }
+
+    run(timestamp = performance.now()) {
+        if (this.lastFrameTimeMs === null) {
+            this.lastFrameTimeMs = timestamp;
+        }
+        const rawDeltaMs = timestamp - this.lastFrameTimeMs;
+        const frameDeltaMs = Math.min(this.maxFrameDeltaMs, Math.max(0, rawDeltaMs || 0));
+        this.lastFrameTimeMs = timestamp;
+
+        if (!this.isGameRunning) {
+            this.camera.update(this.player.x, this.player.y);
+            this.props.forEach(p => p.update());
+            this.updateParticles();
+            this.renderScene();
+            requestAnimationFrame(nextTs => this.run(nextTs));
+            return;
+        }
+
+        this.accumulatorMs += frameDeltaMs;
+        let steps = 0;
+        while (this.accumulatorMs >= this.fixedStepMs && steps < this.maxCatchUpSteps) {
+            const keepRunning = this.updateSimulationStep();
+            this.accumulatorMs -= this.fixedStepMs;
+            steps++;
+            if (!keepRunning) {
+                this.accumulatorMs = 0;
+                break;
+            }
+        }
+        if (steps === this.maxCatchUpSteps && this.accumulatorMs >= this.fixedStepMs) {
+            // Prefer dropping backlog over stretching real-time gameplay into slow motion.
+            this.accumulatorMs = 0;
+        }
+
+        this.renderScene();
+        requestAnimationFrame(nextTs => this.run(nextTs));
+        return;
+        /*
+
         if (!this.isGameRunning) {
             this.camera.update(this.player.x, this.player.y);
             this.props.forEach(p => p.update());
@@ -4362,6 +5406,7 @@ class Game {
         this.renderScene();
 
         requestAnimationFrame(() => this.run());
+        */
     }
 
     renderScene() {
@@ -4372,12 +5417,14 @@ class Game {
         this.map.render(this.ctx, this.camera, this.canvas.width, this.canvas.height);
 
         // Walls, props, actors and projectiles share one painter's-order list
-        const entities = [];
+        const entities = this.renderEntities;
+        entities.length = 0;
         this.collectWallEntities(entities);
 
         const pushRef = ref => entities.push({
+            kind: 'ref',
             depth: ref.x + ref.y + (ref.depthOffset || 0),
-            render: () => ref.render(this.ctx, this.camera, this.canvas.width, this.canvas.height)
+            ref
         });
 
         pushRef(this.player);
@@ -4395,7 +5442,11 @@ class Game {
 
         entities.sort((a, b) => a.depth - b.depth);
         for (const ent of entities) {
-            ent.render();
+            if (ent.kind === 'wall') {
+                this.map.renderWallTile(this.ctx, ent.screenX, ent.screenY, ent.r, ent.c, ent.alpha, ent.hash);
+            } else {
+                ent.ref.render(this.ctx, this.camera, this.canvas.width, this.canvas.height);
+            }
         }
 
         this.renderEffects();
@@ -4508,5 +5559,15 @@ class Game {
             ctx.restore();
         }
     }
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+        Game,
+        Monster,
+        claimGridCell,
+        findGridPath,
+        goldDropForMonster
+    };
 }
 

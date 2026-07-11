@@ -9,7 +9,8 @@ class MonsterFactory {
     get floor() { return this.game.floor; }
 
     spawnInitialMonsters() {
-        for (let i = 0; i < 5; i++) {
+        const initialCount = this.floor >= 3 ? 6 : 5;
+        for (let i = 0; i < initialCount; i++) {
             this.spawnMonster();
         }
     }
@@ -33,7 +34,8 @@ class MonsterFactory {
         }
 
         const mLvl = this.floor * 2 - 1 + Math.floor(Math.random() * 2);
-        const rank = Math.random() < 0.10 ? 'champion' : 'normal';
+        const championChance = Math.min(0.16, 0.10 + (this.floor - 1) * 0.015);
+        const rank = Math.random() < championChance ? 'champion' : 'normal';
         this.monsters.push(new Monster(rx, ry, mLvl, rank, this.pickMonsterKind()));
     }
 
