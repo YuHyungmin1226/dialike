@@ -325,6 +325,108 @@ function testDragSwapKeepsSelectedGemOnSameItem() {
   if (!ok) process.exitCode = 1;
 }
 
+function makeInventoryClickFixture({ shopOpen = false } = {}) {
+  const originalDocument = global.document;
+  const originalSfx = global.sfx;
+  const player = new PlayerStub();
+  const item = {
+    name: 'Test Sword',
+    type: 'weapon',
+    slot: 'weapon',
+    value: 10,
+    rarity: 'normal',
+    color: '#ccc',
+    equipped: true
+  };
+  const inventory = [item];
+
+  player.recalculateStats(inventory);
+
+  global.document = {
+    getElementById(id) {
+      if (id !== 'shop-panel') return null;
+      return {
+        classList: {
+          contains(name) {
+            return name === 'hidden' ? !shopOpen : false;
+          }
+        }
+      };
+    }
+  };
+  global.sfx = {
+    init() {},
+    playHit() {},
+    playPotion() {},
+    playMonsterDeath() {}
+  };
+
+  const game = Object.create(Game.prototype);
+  Object.assign(game, {
+    player,
+    inventory,
+    selectedGemIdx: null,
+    pendingDestroySlotIdx: null,
+    pendingDestroyUntilMs: 0,
+    floaters: { add() {} },
+    updateUI() {},
+    syncInventoryUI() {}
+  });
+
+  return {
+    game,
+    inventory,
+    item,
+    restore() {
+      global.document = originalDocument;
+      global.sfx = originalSfx;
+    }
+  };
+}
+
+function testShiftClickDestroyRequiresSecondClick() {
+  const { game, inventory, item, restore } = makeInventoryClickFixture();
+  try {
+    const first = game.handleInventorySlotClick(0, { shiftKey: true, nowMs: 1000 });
+    const armed =
+      first.ok === true &&
+      first.action === 'arm-destroy' &&
+      inventory[0] === item &&
+      game.pendingDestroySlotIdx === 0;
+
+    const second = game.handleInventorySlotClick(0, { shiftKey: true, nowMs: 1400 });
+    const destroyed =
+      second.ok === true &&
+      second.action === 'destroy' &&
+      inventory[0] === null &&
+      game.pendingDestroySlotIdx === null;
+
+    const ok = armed && destroyed;
+    console.log(`shiftClickDestroy: armed=${armed}, destroyed=${destroyed} -> ${ok ? 'OK' : 'FAIL'}`);
+    if (!ok) process.exitCode = 1;
+  } finally {
+    restore();
+  }
+}
+
+function testShiftClickSellsWhenShopOpen() {
+  const { game, inventory, restore } = makeInventoryClickFixture({ shopOpen: true });
+  try {
+    game.player.gold = 0;
+    const result = game.handleInventorySlotClick(0, { shiftKey: true, nowMs: 1000 });
+    const ok =
+      result.ok === true &&
+      result.action === 'sell' &&
+      inventory[0] === null &&
+      game.player.gold === 10;
+
+    console.log(`shiftClickSell: sold=${result.action === 'sell'}, gold=${game.player.gold} -> ${ok ? 'OK' : 'FAIL'}`);
+    if (!ok) process.exitCode = 1;
+  } finally {
+    restore();
+  }
+}
+
 // ===== New tests for extracted data functions =====
 
 function shopPriceFor(basePrice, playerLevel) {
@@ -547,6 +649,53 @@ function testProductionPathfindingAroundWall() {
   console.log('productionMonsterPathfinding: OK');
 }
 
+function testProductionPathfindingScalesToLargeSnakeMap() {
+  const rows = 40;
+  const cols = 40;
+  const tileSize = 10;
+  const grid = Array.from({ length: rows }, () => Array(cols).fill(1));
+  const pathCells = [];
+
+  for (let row = 0; row < rows; row++) {
+    if (row % 2 === 0) {
+      const leftToRight = Math.floor(row / 2) % 2 === 0;
+      const colsInOrder = leftToRight
+        ? Array.from({ length: cols }, (_, col) => col)
+        : Array.from({ length: cols }, (_, col) => cols - 1 - col);
+      colsInOrder.forEach(col => {
+        grid[row][col] = 0;
+        pathCells.push({ row, col });
+      });
+    } else {
+      const connectorCol = Math.floor((row - 1) / 2) % 2 === 0 ? cols - 1 : 0;
+      grid[row][connectorCol] = 0;
+      pathCells.push({ row, col: connectorCol });
+    }
+  }
+
+  const map = {
+    rows,
+    cols,
+    tileSize,
+    grid,
+    tileToWorld(col, row) {
+      return { x: (col + 0.5) * tileSize, y: (row + 0.5) * tileSize };
+    }
+  };
+
+  const startCell = pathCells[0];
+  const goalCell = pathCells[pathCells.length - 1];
+  const start = map.tileToWorld(startCell.col, startCell.row);
+  const goal = map.tileToWorld(goalCell.col, goalCell.row);
+
+  const limitedPath = findGridPath(map, start.x, start.y, goal.x, goal.y, 640);
+  const scaledPath = findGridPath(map, start.x, start.y, goal.x, goal.y);
+
+  const ok = limitedPath.length === 0 && scaledPath.length > 0;
+  console.log(`productionLargePathBudget: limited=${limitedPath.length}, scaled=${scaledPath.length} -> ${ok ? 'OK' : 'FAIL'}`);
+  if (!ok) process.exitCode = 1;
+}
+
 function testProductionTrapTilesAreUnique() {
   const originalRandom = Math.random;
   let seed = 123456789;
@@ -620,6 +769,8 @@ function testProductionManaHudOnlyWritesOnVisibleChange() {
   testSocketGemConsumesGemAndUpdatesStats();
   testSocketGemRejectsFullSockets();
   testDragSwapKeepsSelectedGemOnSameItem();
+  testShiftClickDestroyRequiresSecondClick();
+  testShiftClickSellsWhenShopOpen();
   testShopPriceFor();
   testSkillScaling();
   testCastingTimer();
@@ -630,6 +781,7 @@ function testProductionManaHudOnlyWritesOnVisibleChange() {
   testProductionAoeUsesTargetSnapshot();
   testProductionGoldMultiplierAllowsZero();
   testProductionPathfindingAroundWall();
+  testProductionPathfindingScalesToLargeSnakeMap();
   testProductionTrapTilesAreUnique();
   testProductionManaHudOnlyWritesOnVisibleChange();
   console.log('Done.');

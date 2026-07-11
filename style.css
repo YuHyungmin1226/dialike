@@ -352,6 +352,11 @@ canvas {
     box-shadow: 0 0 10px var(--border-gold), inset 0 0 8px rgba(212, 175, 55, 0.3);
 }
 
+.inv-slot.destroy-armed {
+    border-color: #ff9966;
+    box-shadow: 0 0 10px rgba(255, 120, 80, 0.55), inset 0 0 10px rgba(255, 80, 80, 0.25);
+}
+
 .inv-slot .item-quantity {
     position: absolute;
     bottom: 2px;

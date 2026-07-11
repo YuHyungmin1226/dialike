@@ -25,7 +25,7 @@ function goldDropForMonster(monster, roll = Math.random()) {
     return Math.floor(monster.level * (5 + roll * 5) * (monster.goldMult ?? 1));
 }
 
-function findGridPath(map, fromX, fromY, toX, toY, maxVisited = 640) {
+function findGridPath(map, fromX, fromY, toX, toY, maxVisited = null) {
     const tileSize = map.tileSize;
     const start = {
         row: Math.floor(fromY / tileSize),
@@ -49,6 +49,9 @@ function findGridPath(map, fromX, fromY, toX, toY, maxVisited = 640) {
     const bestCost = new Map([[startKey, 0]]);
     const cameFrom = new Map();
     const directions = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    if (!Number.isFinite(maxVisited) || maxVisited === null) {
+        maxVisited = Math.max(640, map.rows * map.cols * 2);
+    }
     let visited = 0;
 
     while (open.length > 0 && visited < maxVisited) {
@@ -3069,6 +3072,8 @@ class Game {
         this.altarMsgCooldown = 0;
         this.selectedGemIdx = null;
         this.dragSrcIdx = null; // source slot index during an inventory drag
+        this.pendingDestroySlotIdx = null;
+        this.pendingDestroyUntilMs = 0;
         this.keys = {};
         this.maxHit = 0;
         this.runStartTime = 0;
@@ -3112,6 +3117,9 @@ class Game {
 
         if (this.selectedGemIdx === src) this.selectedGemIdx = dst;
         else if (this.selectedGemIdx === dst) this.selectedGemIdx = src;
+        if (this.pendingDestroySlotIdx === src || this.pendingDestroySlotIdx === dst) {
+            this.clearPendingDestroy();
+        }
         return true;
     }
 
@@ -3151,6 +3159,124 @@ class Game {
         }
         this.player.recalculateStats(this.inventory);
         return { ok: true, equipped: item.equipped };
+    }
+
+    isShopOpen() {
+        const shopPanel = document.getElementById('shop-panel');
+        return !!shopPanel && !shopPanel.classList.contains('hidden');
+    }
+
+    clearPendingDestroy(index = null) {
+        if (index !== null && this.pendingDestroySlotIdx !== index) return false;
+        const hadPending = this.pendingDestroySlotIdx !== null;
+        this.pendingDestroySlotIdx = null;
+        this.pendingDestroyUntilMs = 0;
+        return hadPending;
+    }
+
+    isDestroyArmed(index, nowMs = Date.now()) {
+        if (this.pendingDestroySlotIdx !== index) return false;
+        if (nowMs > this.pendingDestroyUntilMs) {
+            this.clearPendingDestroy(index);
+            return false;
+        }
+        return true;
+    }
+
+    handleInventorySlotClick(index, options = {}) {
+        const { shiftKey = false, nowMs = Date.now() } = options;
+        const item = this.inventory.at(index);
+        if (!item) return { ok: false, reason: 'empty' };
+
+        if (this.pendingDestroySlotIdx !== null && nowMs > this.pendingDestroyUntilMs) {
+            this.clearPendingDestroy();
+        }
+
+        sfx.init();
+
+        if (shiftKey) {
+            if (this.isShopOpen()) {
+                const rarityMult = { normal: 1, magic: 3, rare: 6, unique: 12 }[item.rarity] || 1;
+                const sellPrice = Math.max(5, Math.floor((item.value || 0) * rarityMult));
+                this.inventory[index] = null;
+                if (this.selectedGemIdx === index) this.selectedGemIdx = null;
+                this.clearPendingDestroy(index);
+                this.player.gold += sellPrice;
+                sfx.playPotion();
+                this.floaters.add(this.player.x, this.player.y - 15, `판매 +${sellPrice} G`, "#ffd700");
+                return { ok: true, action: 'sell' };
+            }
+
+            if (!this.isDestroyArmed(index, nowMs)) {
+                this.pendingDestroySlotIdx = index;
+                this.pendingDestroyUntilMs = nowMs + 2500;
+                sfx.playHit();
+                this.floaters.add(this.player.x, this.player.y - 15, "Shift+클릭 한 번 더: 파괴", "#ff9966");
+                return { ok: true, action: 'arm-destroy' };
+            }
+
+            this.inventory[index] = null;
+            if (this.selectedGemIdx === index) this.selectedGemIdx = null;
+            this.clearPendingDestroy(index);
+            sfx.playMonsterDeath();
+            this.floaters.add(this.player.x, this.player.y - 15, "파괴됨", "#ff5555");
+            return { ok: true, action: 'destroy' };
+        }
+
+        this.clearPendingDestroy();
+
+        if (item.type === 'gem') {
+            if (this.selectedGemIdx === index) {
+                this.selectedGemIdx = null;
+                this.floaters.add(this.player.x, this.player.y - 15, "보석 선택 해제", "#aaaaaa");
+            } else {
+                this.selectedGemIdx = index;
+                this.floaters.add(this.player.x, this.player.y - 15, "소켓이 있는 장비를 클릭하세요", item.color);
+            }
+            return { ok: true, action: 'select-gem' };
+        }
+
+        if (item.slot === 'potion') {
+            if (item.subtype === 'mana') {
+                this.player.manaPotions.push(item.value);
+            } else {
+                this.player.potions.push(item.value);
+            }
+            this.inventory[index] = null;
+            sfx.playPotion();
+            this.floaters.add(this.player.x, this.player.y - 15, `${item.name} 등록`, item.subtype === 'mana' ? "#3a8fff" : "#00ff00");
+            return { ok: true, action: 'register-potion' };
+        }
+
+        if (this.selectedGemIdx !== null) {
+            const gem = this.inventory.at(this.selectedGemIdx);
+            if (this.socketGem(this.selectedGemIdx, index)) {
+                sfx.playPotion();
+                this.floaters.add(this.player.x, this.player.y - 15, `${gem.name} 소켓 장착!`, gem.color);
+            } else {
+                sfx.playHit();
+                this.floaters.add(this.player.x, this.player.y - 15, "빈 소켓이 없습니다!", "#ff5555");
+            }
+            this.selectedGemIdx = null;
+            return { ok: true, action: 'socket-gem' };
+        }
+
+        const result = this.toggleEquipment(index);
+        if (!result.ok && result.reason === 'level') {
+            sfx.playHit();
+            this.floaters.add(this.player.x, this.player.y - 15, "레벨이 부족합니다", "#ff3333");
+            return { ok: false, reason: 'level' };
+        }
+        if (!result.ok) return result;
+
+        if (!result.equipped) {
+            sfx.playMonsterDeath();
+            this.floaters.add(this.player.x, this.player.y - 15, "장착 해제", "#aaaaaa");
+        } else {
+            sfx.playPotion();
+            this.floaters.add(this.player.x, this.player.y - 15, "장착", "#d4af37");
+        }
+        return { ok: true, action: result.equipped ? 'equip' : 'unequip' };
     }
 
     setupUI() {
@@ -3420,8 +3546,10 @@ class Game {
             // doesn't emit a click, so the equip/use click handler is untouched.
             slot.addEventListener('dragstart', (e) => {
                 const idx = parseInt(slot.dataset.slot);
+                if (e.shiftKey) { e.preventDefault(); return; }
                 if (!this.inventory.at(idx)) { e.preventDefault(); return; }
                 this.dragSrcIdx = idx;
+                this.clearPendingDestroy();
                 slot.classList.add('dragging');
                 e.dataTransfer.effectAllowed = 'move';
                 e.dataTransfer.setData('text/plain', String(idx)); // Firefox needs payload
@@ -3458,6 +3586,15 @@ class Game {
 
             slot.addEventListener('click', (e) => {
                 const idx = parseInt(slot.dataset.slot);
+                const handled = this.handleInventorySlotClick(idx, { shiftKey: e.shiftKey });
+                if (!handled.ok) return;
+
+                this.syncInventoryUI();
+                this.player.recalculateStats(this.inventory);
+                this.updateUI();
+                slot.dispatchEvent(new Event('mouseenter'));
+                return;
+
                 const item = this.inventory.at(idx);
                 if (!item) return;
 
@@ -4486,10 +4623,14 @@ class Game {
     }
 
     syncInventoryUI() {
+        if (this.pendingDestroySlotIdx !== null && Date.now() > this.pendingDestroyUntilMs) {
+            this.clearPendingDestroy();
+        }
         const slots = document.querySelectorAll('.inv-slot');
         slots.forEach((slot, i) => {
             const item = this.inventory.at(i);
             slot.draggable = !!item; // only occupied slots can be dragged
+            slot.classList.toggle('destroy-armed', this.isDestroyArmed(i));
             if (item) {
                 slot.classList.add('occupied');
                 if (item.slot === 'weapon') {
