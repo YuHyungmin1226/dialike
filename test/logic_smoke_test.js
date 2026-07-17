@@ -1,6 +1,8 @@
 // Smoke tests for the new Diablo-like mechanics (run with `node test/logic_smoke_test.js`)
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const { CombatSystem } = require('../js/CombatSystem.js');
 const { Game, Monster, findGridPath, goldDropForMonster } = require('../js/game.js');
 
@@ -755,6 +757,14 @@ function testProductionManaHudOnlyWritesOnVisibleChange() {
   console.log('productionManaHudRefresh: OK');
 }
 
+function testProductionTextEncoding() {
+  const root = path.resolve(__dirname, '..');
+  const gameSource = fs.readFileSync(path.join(root, 'js', 'game.js'), 'utf8');
+
+  assert.equal(/[\u0080-\u009f\uf900-\ufaff]/u.test(gameSource), false);
+  console.log('productionTextEncoding: OK');
+}
+
 (function main(){
   console.log('Running logic smoke tests...');
   testCritDistribution(10000);
@@ -784,5 +794,6 @@ function testProductionManaHudOnlyWritesOnVisibleChange() {
   testProductionPathfindingScalesToLargeSnakeMap();
   testProductionTrapTilesAreUnique();
   testProductionManaHudOnlyWritesOnVisibleChange();
+  testProductionTextEncoding();
   console.log('Done.');
 })();

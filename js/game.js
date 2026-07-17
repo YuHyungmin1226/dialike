@@ -3593,84 +3593,6 @@ class Game {
                 this.player.recalculateStats(this.inventory);
                 this.updateUI();
                 slot.dispatchEvent(new Event('mouseenter'));
-                return;
-
-                const item = this.inventory.at(idx);
-                if (!item) return;
-
-                sfx.init();
-
-                if (e.shiftKey) {
-                    const shopOpen = !document.getElementById('shop-panel').classList.contains('hidden');
-                    if (shopOpen) {
-                        // Shift + Click while shop is open: sell for gold
-                        const rarityMult = { normal: 1, magic: 3, rare: 6, unique: 12 }[item.rarity] || 1;
-                        const sellPrice = Math.max(5, Math.floor((item.value || 0) * rarityMult));
-                        this.inventory[idx] = null;
-                        if (this.selectedGemIdx === idx) this.selectedGemIdx = null;
-                        this.player.gold += sellPrice;
-                        sfx.playPotion();
-                        this.floaters.add(this.player.x, this.player.y - 15, `판매 +${sellPrice} G`, "#ffd700");
-                    } else if (confirm(`'${item.name}'을(를) 파괴하시겠습니까?`)) {
-                        // Shift + Click: Destroy item
-                        this.inventory[idx] = null;
-                        if (this.selectedGemIdx === idx) this.selectedGemIdx = null;
-                        sfx.playMonsterDeath();
-                        this.floaters.add(this.player.x, this.player.y - 15, "파괴됨", "#ff5555");
-                    }
-                } else {
-                    // Regular Click
-                    if (item.type === 'gem') {
-                        if (this.selectedGemIdx === idx) {
-                            this.selectedGemIdx = null;
-                            this.floaters.add(this.player.x, this.player.y - 15, "보석 선택 해제", "#aaaaaa");
-                        } else {
-                            this.selectedGemIdx = idx;
-                            this.floaters.add(this.player.x, this.player.y - 15, "소켓이 있는 장비를 클릭하세요", item.color);
-                        }
-                    } else if (item.slot === 'potion') {
-                        if (item.subtype === 'mana') {
-                            this.player.manaPotions.push(item.value);
-                        } else {
-                            this.player.potions.push(item.value);
-                        }
-                        this.inventory[idx] = null;
-                        sfx.playPotion();
-                        this.floaters.add(this.player.x, this.player.y - 15, `${item.name} 등록`, item.subtype === 'mana' ? "#3a8fff" : "#00ff00");
-                    } else if (this.selectedGemIdx !== null) {
-                        // Socket the selected gem into this equipment
-                        const gem = this.inventory.at(this.selectedGemIdx);
-                        if (this.socketGem(this.selectedGemIdx, idx)) {
-                            sfx.playPotion();
-                            this.floaters.add(this.player.x, this.player.y - 15, `${gem.name} 소켓 장착!`, gem.color);
-                        } else {
-                            sfx.playHit();
-                            this.floaters.add(this.player.x, this.player.y - 15, "빈 소켓이 없습니다!", "#ff5555");
-                        }
-                        this.selectedGemIdx = null;
-                    } else {
-                        // Weapon/Armor Equip Toggle
-                        const result = this.toggleEquipment(idx);
-                        if (!result.ok && result.reason === 'level') {
-                            sfx.playHit();
-                            this.floaters.add(this.player.x, this.player.y - 15, "레벨 부족!", "#ff3333");
-                            return;
-                        }
-                        if (!result.ok) return;
-                        if (!result.equipped) {
-                            sfx.playMonsterDeath(); 
-                            this.floaters.add(this.player.x, this.player.y - 15, "장착 해제", "#aaaaaa");
-                        } else {
-                            sfx.playPotion(); 
-                            this.floaters.add(this.player.x, this.player.y - 15, "장착됨!", "#d4af37");
-                        }
-                    }
-                }
-                
-                this.syncInventoryUI();
-                this.player.recalculateStats(this.inventory);
-                this.updateUI();
-                slot.dispatchEvent(new Event('mouseenter'));
             });
         });
     }
@@ -5145,7 +5067,7 @@ class Game {
                 this.player.targetX = this.player.x;
                 this.player.targetY = this.player.y;
                 sfx.playPotion();
-                this.floaters.add(this.player.x, this.player.y - 15, "留덉쓣 ?꾩갑", "#00ffff");
+                this.floaters.add(this.player.x, this.player.y - 15, "마을 도착", "#00ffff");
             }
         } else if (this.currentMap === 'town' && this.townPortal) {
             if (Math.hypot(this.player.x - this.townPortal.x, this.player.y - this.townPortal.y) < 24) {
@@ -5159,7 +5081,7 @@ class Game {
                 this.player.targetX = this.player.x;
                 this.player.targetY = this.player.y;
                 sfx.playPotion();
-                this.floaters.add(this.player.x, this.player.y - 15, "?섏쟾 吏꾩엯", "#ff5500");
+                this.floaters.add(this.player.x, this.player.y - 15, "던전 진입", "#ff5500");
             }
         }
 
@@ -5172,7 +5094,7 @@ class Game {
                     if (this.stairsMsgCooldown <= 0) {
                         this.stairsMsgCooldown = 90;
                         sfx.playHit();
-                        this.floaters.add(this.player.x, this.player.y - 20, "蹂댁뒪媛 ?댁븘?덈뒗 ?숈븞 怨꾨떒??遊됱씤?섏뼱 ?덉뒿?덈떎!", '#ff5555');
+                        this.floaters.add(this.player.x, this.player.y - 20, "보스가 살아있는 동안 계단이 봉인되어 있습니다!", '#ff5555');
                     }
                 } else {
                     this.descendStairs();
@@ -5256,7 +5178,7 @@ class Game {
                             minion.goldMult = 0;
                             this.monsters.push(minion);
                         }
-                        this.floaters.add(m.x, m.y - 36, "留앹옄 ?뚰솚!", '#a64dff');
+                        this.floaters.add(m.x, m.y - 36, "망자 소환!", '#a64dff');
                         sfx.playBossSpawn();
                     }
                 }

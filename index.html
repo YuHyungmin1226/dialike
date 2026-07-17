@@ -80,7 +80,7 @@
             <div id="stats-panel" class="glass-panel hidden">
                 <div class="panel-header">
                     <h3>영웅 정보</h3>
-                    <button class="close-btn" id="close-stats-btn">&times;</button>
+                    <button class="close-btn" id="close-stats-btn" type="button" aria-label="영웅 정보 닫기">&times;</button>
                 </div>
                 <div class="panel-body">
                     <div class="stat-group">
@@ -134,7 +134,7 @@
             <div id="inventory-panel" class="glass-panel hidden">
                 <div class="panel-header">
                     <h3>소지품 창</h3>
-                    <button class="close-btn" id="close-inv-btn">&times;</button>
+                    <button class="close-btn" id="close-inv-btn" type="button" aria-label="소지품 창 닫기">&times;</button>
                 </div>
                 <div class="panel-body">
                     <div class="inventory-grid">
@@ -166,7 +166,7 @@
             <div id="skills-panel" class="glass-panel hidden">
                 <div class="panel-header">
                     <h3>스킬 정보</h3>
-                    <button class="close-btn" id="close-skills-btn">&times;</button>
+                    <button class="close-btn" id="close-skills-btn" type="button" aria-label="스킬 정보 닫기">&times;</button>
                 </div>
                 <div class="panel-body">
                     <div id="skills-list"></div>
@@ -183,7 +183,7 @@
             <div id="shop-panel" class="glass-panel hidden">
                 <div class="panel-header">
                     <h3>상점 (아카라)</h3>
-                    <button class="close-btn" id="close-shop-btn">&times;</button>
+                    <button class="close-btn" id="close-shop-btn" type="button" aria-label="상점 닫기">&times;</button>
                 </div>
                 <div class="panel-body">
                     <div class="shop-item" data-item="0">
@@ -268,33 +268,33 @@
 
                         <!-- Skill / Potion slots -->
                         <div class="slots-container">
-                            <div class="skill-slot active" id="slot-lclick" title="기본 공격 (&lt; 키 또는 좌클릭)">
+                            <button type="button" class="skill-slot active" id="slot-lclick" title="기본 공격 (&lt; 키 또는 좌클릭)" aria-keyshortcuts="&lt;">
                                 <span class="slot-key">&lt;</span>
-                                <div class="slot-icon atk-icon"></div>
+                                <span class="slot-icon atk-icon"></span>
                                 <span class="slot-name">베기</span>
-                            </div>
-                            <div class="skill-slot" id="slot-rclick" title="파이어볼 (&gt; 키 또는 우클릭)">
+                            </button>
+                            <button type="button" class="skill-slot" id="slot-rclick" title="파이어볼 (&gt; 키 또는 우클릭)" aria-keyshortcuts="&gt;">
                                 <span class="slot-key">&gt;</span>
-                                <div class="slot-icon spell-icon"></div>
+                                <span class="slot-icon spell-icon"></span>
                                 <span class="slot-name">파이어볼</span>
-                            </div>
-                            <div class="skill-slot potion-slot" id="slot-potion" title="체력 물약 마시기 (Q)">
+                            </button>
+                            <button type="button" class="skill-slot potion-slot" id="slot-potion" title="체력 물약 마시기 (Q)" aria-keyshortcuts="Q">
                                 <span class="slot-key">Q</span>
-                                <div class="slot-icon potion-icon"></div>
+                                <span class="slot-icon potion-icon"></span>
                                 <span class="potion-count" id="potion-count">5</span>
                                 <span class="slot-name">체력물약</span>
-                            </div>
-                            <div class="skill-slot potion-slot" id="slot-mana-potion" title="마나 물약 마시기 (R)">
+                            </button>
+                            <button type="button" class="skill-slot potion-slot" id="slot-mana-potion" title="마나 물약 마시기 (R)" aria-keyshortcuts="R">
                                 <span class="slot-key">R</span>
-                                <div class="slot-icon potion-icon mana-potion-icon"></div>
+                                <span class="slot-icon potion-icon mana-potion-icon"></span>
                                 <span class="potion-count" id="mana-potion-count">2</span>
                                 <span class="slot-name">마나물약</span>
-                            </div>
-                            <div class="skill-slot" id="slot-portal" title="차원문 열기 (T)">
+                            </button>
+                            <button type="button" class="skill-slot" id="slot-portal" title="차원문 열기 (T)" aria-keyshortcuts="T">
                                 <span class="slot-key">T</span>
-                                <div class="slot-icon portal-icon"></div>
+                                <span class="slot-icon portal-icon"></span>
                                 <span class="slot-name">차원문</span>
-                            </div>
+                            </button>
                         </div>
 
                         <!-- Level Indicator -->
