@@ -4144,9 +4144,19 @@ class Game {
         const lights = [];
         const bloomLights = [];
         const pPos = this.worldToScreen(this.player.x, this.player.y);
-        const playerLight = { x: pPos.x, y: pPos.y - 30 * this.zoom, r: 290, glow: '200, 190, 150', glowAlpha: 0.08 };
+        const playerLight = { x: pPos.x, y: pPos.y - 30 * this.zoom, r: 320, glow: '200, 190, 150', glowAlpha: 0.08 };
         lights.push(playerLight);
         bloomLights.push(playerLight);
+        lights.push({ x: pPos.x, y: pPos.y - 18 * this.zoom, r: 68 });
+        for (const monster of this.monsters) {
+            if (monster.state === 'death') continue;
+            const pos = this.worldToScreen(monster.x, monster.y);
+            lights.push({
+                x: pos.x,
+                y: pos.y - 18 * this.zoom,
+                r: monster.rank === 'boss' ? 98 : 58
+            });
+        }
 
         for (const proj of this.projectiles) {
             const pos = this.worldToScreen(proj.x, proj.y);
@@ -5473,6 +5483,8 @@ class Game {
     }
 
     renderScene() {
+        this.ctx.globalAlpha = 1;
+        this.ctx.globalCompositeOperation = 'source-over';
         this.ctx.fillStyle = '#080606';
         this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
 
@@ -5633,4 +5645,3 @@ if (typeof module !== 'undefined' && module.exports) {
         goldDropForMonster
     };
 }
-
